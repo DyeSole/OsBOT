@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 
-class ChatHistoryStorage:
+class ChatHistoryStore:
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -33,7 +33,24 @@ class ChatHistoryStorage:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def load_all_entries(self, *, channel_id: int) -> list[dict[str, str]]:
+        return self._read_jsonl_entries(self._history_path(channel_id))
+
+    def reset_active_history(self, *, channel_id: int) -> None:
         path = self._history_path(channel_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+
+    def render_entries(self, entries: list[dict[str, str]]) -> str:
+        lines: list[str] = []
+        for row in entries:
+            hhmm = self._hhmm(row["time"])
+            username = row["username"]
+            content = row["content"].replace("\n", "\\n")
+            lines.append(f"[{hhmm} {username}] {content}")
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _read_jsonl_entries(path: Path) -> list[dict[str, str]]:
         if not path.exists():
             return []
 
@@ -74,13 +91,3 @@ class ChatHistoryStorage:
                 tail = timestamp.split(" ", 1)[1]
                 return tail[:5]
             return timestamp[:5]
-
-    def build_transcript_for_api(self, *, channel_id: int) -> str:
-        entries = self.load_all_entries(channel_id=channel_id)
-        lines: list[str] = []
-        for row in entries:
-            hhmm = self._hhmm(row["time"])
-            username = row["username"]
-            content = row["content"].replace("\n", "\\n")
-            lines.append(f"[{hhmm} {username}] {content}")
-        return "\n".join(lines).strip()

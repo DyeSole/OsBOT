@@ -39,6 +39,13 @@ python3 -m pip install -r requirements.txt
 python3 bot.py
 ```
 
+Manual compression:
+
+```bash
+cd OsBOT
+python3 scripts/compress_history.py <channel_id>
+```
+
 ## Notes
 
 This project is intentionally isolated from `DcBot` and does not import its code.

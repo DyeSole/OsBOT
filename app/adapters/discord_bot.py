@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
 
 import discord
-from discord import AllowedMentions
+from discord import AllowedMentions, app_commands
 
-from app.config.settings import BASE_DIR, Settings
+from app.config.settings import BASE_DIR, Settings, env_last_modified, load_settings, read_env_values, update_env_values
 from app.core.logging import BotLogger
 from app.core.session_engine import SessionEngine
-from app.infra.storage import ChatHistoryStorage
+from app.infra.storage import ChatHistoryStore, CompressionStore
+from app.services.compression_service import CompressionService
+from app.services.context_builder import ContextBuilder
+from app.services.prompt_service import PromptService
 from app.services.reply_service import ReplyService
 
 
@@ -23,6 +27,116 @@ class TypingSession:
     user_label: str
 
 
+class ApiConfigModal(discord.ui.Modal, title="编辑 API 配置"):
+    def __init__(self, bot: "DiscordBot"):
+        super().__init__()
+        self.bot = bot
+        env_values = read_env_values()
+        current = bot.settings
+        self.base_url = discord.ui.TextInput(
+            label="BASE_URL",
+            default=env_values.get("BASE_URL", current.base_url),
+            required=True,
+            max_length=400,
+        )
+        self.api_key = discord.ui.TextInput(
+            label="API_KEY",
+            default=env_values.get("API_KEY", current.api_key),
+            required=True,
+            max_length=400,
+        )
+        self.model = discord.ui.TextInput(
+            label="MODEL",
+            default=env_values.get("MODEL", current.model),
+            required=True,
+            max_length=120,
+        )
+        self.add_item(self.base_url)
+        self.add_item(self.api_key)
+        self.add_item(self.model)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        update_env_values(
+            {
+                "BASE_URL": self.base_url.value.strip(),
+                "API_KEY": self.api_key.value.strip(),
+                "MODEL": self.model.value.strip(),
+            }
+        )
+        await interaction.response.edit_message(
+            content="工具箱\n\nAPI 配置已写入 .env，文件监听会自动生效。",
+            view=ToolboxView(self.bot),
+        )
+
+
+class PromptEditModal(discord.ui.Modal):
+    def __init__(self, bot: "DiscordBot", *, target: str, title: str):
+        super().__init__(title=title)
+        self.bot = bot
+        self.target = target
+        current_text = bot.prompt_service.read_prompt(target)
+        self.content = discord.ui.TextInput(
+            label=title,
+            default=current_text[:4000],
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=4000,
+        )
+        self.add_item(self.content)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        self.bot.prompt_service.write_prompt(
+            target=self.target,
+            content=self.content.value,
+        )
+        await interaction.response.edit_message(
+            content="提示词工具箱\n\n提示词已保存，下一次调用会自动生效。",
+            view=PromptToolboxView(self.bot),
+        )
+
+
+class PromptToolboxView(discord.ui.View):
+    def __init__(self, bot: "DiscordBot"):
+        super().__init__(timeout=300)
+        self.bot = bot
+
+    @discord.ui.button(label="编辑人格提示词", style=discord.ButtonStyle.primary)
+    async def edit_soul(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(
+            PromptEditModal(self.bot, target="soul", title="编辑人格提示词")
+        )
+
+    @discord.ui.button(label="编辑压缩提示词", style=discord.ButtonStyle.secondary)
+    async def edit_compression(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(
+            PromptEditModal(self.bot, target="compression", title="编辑压缩提示词")
+        )
+
+    @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(
+            content="工具箱",
+            view=ToolboxView(self.bot),
+        )
+
+
+class ToolboxView(discord.ui.View):
+    def __init__(self, bot: "DiscordBot"):
+        super().__init__(timeout=300)
+        self.bot = bot
+
+    @discord.ui.button(label="API配置", style=discord.ButtonStyle.primary)
+    async def api_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(ApiConfigModal(self.bot))
+
+    @discord.ui.button(label="提示词", style=discord.ButtonStyle.secondary)
+    async def prompts(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(
+            content="提示词工具箱",
+            view=PromptToolboxView(self.bot),
+        )
+
+
 class DiscordBot:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -32,13 +146,25 @@ class DiscordBot:
             show_error_detail=settings.show_error_detail,
         )
         self.reply_service = ReplyService(settings)
-        self.history_storage = ChatHistoryStorage(
+        self.history_store = ChatHistoryStore(
             data_dir=BASE_DIR / "data" / "chat_history",
         )
+        self.compression_store = CompressionStore(
+            memory_dir=BASE_DIR / "data" / "memory",
+        )
+        self.compression_service = CompressionService(
+            settings=settings,
+            history_store=self.history_store,
+            compression_store=self.compression_store,
+        )
+        self.prompt_service = PromptService()
+        self.context_builder = ContextBuilder(self.history_store, self.compression_store)
         self.session_timeout_seconds = settings.session_timeout_seconds
         self.typing_timeout_seconds = settings.session_timeout_seconds
         self.typing_detect_delay_seconds = settings.typing_detect_delay_seconds
         self.reset_timer_seconds = settings.reset_timer_seconds
+        self._env_watch_task: asyncio.Task | None = None
+        self._env_mtime = env_last_modified()
         self._typing_sessions: dict[tuple[int, int], TypingSession] = {}
         self._session_engine = SessionEngine()
         self._last_message_ts: dict[tuple[int, int], float] = {}
@@ -48,10 +174,107 @@ class DiscordBot:
         intents.message_content = True
         intents.typing = True
         self.client = discord.Client(intents=intents)
+        self.tree = app_commands.CommandTree(self.client)
+        self._commands_synced = False
 
         self.client.event(self.on_ready)
         self.client.event(self.on_message)
         self.client.event(self.on_typing)
+        self._register_app_commands()
+
+    def _register_app_commands(self) -> None:
+        @self.tree.command(name="工具箱", description="打开工具箱")
+        async def toolbox(interaction: discord.Interaction) -> None:
+            await interaction.response.send_message(
+                "工具箱",
+                view=ToolboxView(self),
+                ephemeral=True,
+            )
+
+        @self.tree.command(name="compress", description="Compress active chat history for this channel")
+        async def compress(interaction: discord.Interaction) -> None:
+            channel = interaction.channel
+            if channel is None or not hasattr(channel, "id"):
+                await interaction.response.send_message(
+                    "当前上下文没有可用频道，不能执行压缩。",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.response.defer(ephemeral=True, thinking=True)
+
+            try:
+                segment = await asyncio.to_thread(
+                    self.compression_service.compress_history,
+                    channel_id=channel.id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("UNKNOWN", "manual compression failed", exc=exc)
+                await interaction.followup.send(
+                    "压缩失败了，去日志里看一下。",
+                    ephemeral=True,
+                )
+                return
+
+            if segment is None:
+                await interaction.followup.send(
+                    "这个频道当前没有可压缩的活跃消息。",
+                    ephemeral=True,
+                )
+                return
+
+            keywords = segment.get("keywords") or []
+            keywords_text = "、".join(str(item) for item in keywords) if keywords else "无"
+            await interaction.followup.send(
+                "\n".join(
+                    [
+                        "压缩完成。",
+                        f"segment_id: {segment.get('segment_id', '')}",
+                        f"source_id: {segment.get('source_id', '')}",
+                        f"范围: {segment.get('start_time', '')} -> {segment.get('end_time', '')}",
+                        f"条数: {segment.get('message_count', 0)}",
+                        f"关键词: {keywords_text}",
+                    ]
+                ),
+                ephemeral=True,
+            )
+
+    def apply_settings(self, settings: Settings) -> None:
+        old_token = self.settings.discord_bot_token
+        self.settings = settings
+        self.reply_service.apply_settings(settings)
+        self.compression_service.apply_settings(settings)
+        self.logger.bot_key = settings.bot_key
+        self.logger.mode = settings.app_mode
+        self.logger.show_error_detail = settings.show_error_detail
+        self.session_timeout_seconds = settings.session_timeout_seconds
+        self.typing_timeout_seconds = settings.session_timeout_seconds
+        self.typing_detect_delay_seconds = settings.typing_detect_delay_seconds
+        self.reset_timer_seconds = settings.reset_timer_seconds
+        if settings.discord_bot_token != old_token:
+            self.logger.error(
+                "CONFIG",
+                "DISCORD_BOT_TOKEN changed in .env but live token swap is not supported; restart required.",
+            )
+
+    async def reload_settings_if_needed(self) -> bool:
+        current_mtime = env_last_modified()
+        if current_mtime <= self._env_mtime:
+            return False
+
+        settings = load_settings()
+        self.apply_settings(settings)
+        self._env_mtime = current_mtime
+        self.logger.info("env hot-reloaded from .env")
+        return True
+
+    async def _watch_env_changes(self) -> None:
+        while True:
+            await asyncio.sleep(1.0)
+            try:
+                await self.reload_settings_if_needed()
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("CONFIG", "failed to hot reload .env", exc=exc)
 
     def _typing_key(self, channel_id: int, user_id: int) -> tuple[int, int]:
         return (channel_id, user_id)
@@ -66,6 +289,34 @@ class DiscordBot:
     def _log_typing(self, message: str) -> None:
         if self._typing_probe_enabled():
             self.logger.info(message)
+
+    @staticmethod
+    def _split_sentences(text: str) -> list[str]:
+        stripped = (text or "").strip()
+        if not stripped:
+            return []
+        parts = re.split(r"(?<=[。！？!?])\s+|\n+", stripped)
+        out = [p.strip() for p in parts if p and p.strip()]
+        return out or [stripped]
+
+    async def _reply_by_sentence(self, anchor_message: discord.Message, reply: str) -> None:
+        sentences = self._split_sentences(reply)
+        if not sentences:
+            return
+        for idx, sentence in enumerate(sentences):
+            if idx == 0:
+                await anchor_message.reply(
+                    sentence,
+                    mention_author=False,
+                    allowed_mentions=AllowedMentions.none(),
+                )
+            else:
+                await anchor_message.channel.send(
+                    sentence,
+                    allowed_mentions=AllowedMentions.none(),
+                )
+            if idx < len(sentences) - 1:
+                await asyncio.sleep(0.8)
 
     @staticmethod
     def _channel_label(channel) -> str:  # type: ignore[no-untyped-def]
@@ -176,19 +427,26 @@ class DiscordBot:
         if not merged_text:
             return
 
-        self.history_storage.append_entry(
+        pending_entry = {
+            "role": "user",
+            "username": pending.user_label,
+            "time": pending.first_time,
+            "content": merged_text,
+        }
+        transcript = self.context_builder.build_context_for_api(
+            channel_id=channel_id,
+            pending_messages=[pending_entry],
+        )
+        if not transcript:
+            self.logger.error("LOGIC", "empty transcript, skip api request")
+            return
+        self.history_store.append_entry(
             channel_id=channel_id,
             role="user",
             username=pending.user_label,
             time=pending.first_time,
             content=merged_text,
         )
-        transcript = self.history_storage.build_transcript_for_api(
-            channel_id=channel_id,
-        )
-        if not transcript:
-            self.logger.error("LOGIC", "empty transcript, skip api request")
-            return
         if self.settings.show_api_payload:
             self.logger.info(f"📨 api_payload\n{transcript}")
         messages = [{"role": "user", "content": transcript}]
@@ -203,27 +461,19 @@ class DiscordBot:
             async with pending.channel.typing():
                 reply = await asyncio.to_thread(self.reply_service.generate_reply, messages)
             try:
-                await pending.anchor_message.reply(
-                    reply,
-                    mention_author=False,
-                    allowed_mentions=AllowedMentions.none(),
-                )
+                await self._reply_by_sentence(pending.anchor_message, reply)
             except Exception as exc:
                 # Fallback only when reply reference is not supported for the current channel/message state.
                 self.logger.error("LOGIC", f"reply() failed: {exc}")
                 try:
-                    await pending.anchor_message.reply(
-                        reply,
-                        mention_author=False,
-                        allowed_mentions=AllowedMentions.none(),
-                    )
+                    await self._reply_by_sentence(pending.anchor_message, reply)
                 except Exception as exc2:
                     self.logger.error("LOGIC", f"reply() fallback failed: {exc2}")
                     await pending.channel.send(
                         reply,
                         allowed_mentions=AllowedMentions.none(),
                     )
-            self.history_storage.append_entry(
+            self.history_store.append_entry(
                 channel_id=channel_id,
                 role="assistant",
                 username=self.settings.bot_key,
@@ -259,8 +509,17 @@ class DiscordBot:
     async def on_ready(self) -> None:
         self.logger.startup_jar(cat_count=1)
         self.logger.info(f"bot is running as {self.client.user}")
+        if not self._commands_synced:
+            try:
+                synced = await self.tree.sync()
+                self._commands_synced = True
+                self.logger.info(f"slash commands synced: {len(synced)}")
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("API", "failed to sync slash commands", exc=exc)
         if self._typing_probe_enabled() and (self._typing_watchdog_task is None or self._typing_watchdog_task.done()):
             self._typing_watchdog_task = asyncio.create_task(self._typing_watchdog())
+        if self._env_watch_task is None or self._env_watch_task.done():
+            self._env_watch_task = asyncio.create_task(self._watch_env_changes())
 
     async def on_typing(self, channel, user, when):  # type: ignore[no-untyped-def]
         if user.bot:
@@ -277,6 +536,7 @@ class DiscordBot:
         self._session_engine.switch_to_long_timer(channel.id, user.id)
 
     async def on_message(self, message: discord.Message) -> None:
+        await self.reload_settings_if_needed()
         if message.author.bot:
             return
 
