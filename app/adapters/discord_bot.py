@@ -303,7 +303,7 @@ class DiscordBot:
         stripped = (text or "").strip()
         if not stripped:
             return []
-        parts = re.split(r"(?<=[。！？!?])\s+|\n+", stripped)
+        parts = re.split(r"\n+", stripped)
         out = [p.strip() for p in parts if p and p.strip()]
         return out or [stripped]
 
