@@ -43,7 +43,7 @@ class CompressionService:
         )
 
     def compress_history(self, *, channel_id: int) -> dict[str, Any] | None:
-        messages = self.history_store.load_all_entries(channel_id=channel_id)
+        messages = self.history_store.load_entries_after_marker(channel_id=channel_id)
         if not messages:
             return None
 

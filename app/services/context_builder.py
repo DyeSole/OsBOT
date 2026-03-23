@@ -15,14 +15,13 @@ class ContextBuilder:
         pending_messages: list[dict[str, str]],
     ) -> str:
         summary_block = self._render_summary_block(channel_id=channel_id)
-        anchor_block = self._render_anchor_block(channel_id=channel_id)
         live_block = self.history_store.render_entries(
             self.history_store.load_all_entries(channel_id=channel_id)
         )
         pending_block = self.history_store.render_entries(pending_messages)
 
         return "\n\n".join(
-            block for block in [summary_block, anchor_block, live_block, pending_block] if block
+            block for block in [summary_block, live_block, pending_block] if block
         ).strip()
 
     def _render_summary_block(self, *, channel_id: int) -> str:
@@ -39,10 +38,3 @@ class ContextBuilder:
                 continue
             lines.append(f"[{start_time} ~ {end_time}] {summary_text}")
         return "\n".join(lines).strip() if len(lines) > 1 else ""
-
-    def _render_anchor_block(self, *, channel_id: int) -> str:
-        anchor_rows = self.compression_store.load_anchor_window(channel_id=channel_id, limit=30)
-        if not anchor_rows:
-            return ""
-        rendered = self.history_store.render_entries(anchor_rows)
-        return f"[锚点前30条]\n{rendered}".strip()
