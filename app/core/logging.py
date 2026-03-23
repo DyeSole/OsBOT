@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Optional
+
+from app.core.clock import now_clock
 
 
 ERROR_EMOJI = {
@@ -22,7 +23,7 @@ class BotLogger:
     show_error_detail: bool = False
 
     def _ts(self) -> str:
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return now_clock()
 
     def info(self, message: str) -> None:
         print(f"{self._ts()} | ℹ️ INFO | {self.bot_key} | {message}")

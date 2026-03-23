@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from app.core.clock import now as _now
 from pathlib import Path
 from typing import Any
 
@@ -118,7 +118,7 @@ class CompressionStore:
 
     @staticmethod
     def build_segment_id() -> str:
-        return datetime.now().strftime("seg_%Y%m%d_%H%M%S")
+        return _now().strftime("seg_%Y%m%d_%H%M%S")
 
     @staticmethod
     def build_source_hash(messages: list[dict[str, str]]) -> str:

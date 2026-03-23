@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from app.core.clock import now_clock as _now_clock_util
 from pathlib import Path
 from typing import Any
 
@@ -170,4 +170,4 @@ class CompressionService:
 
     @staticmethod
     def _now_clock() -> str:
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return _now_clock_util()

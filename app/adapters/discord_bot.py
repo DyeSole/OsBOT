@@ -7,6 +7,8 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time
 
+from app.core.clock import now as _now, now_clock as _now_clock_util
+
 import discord
 from discord import AllowedMentions, app_commands
 
@@ -182,7 +184,7 @@ class DiscordBot:
 
     @staticmethod
     def _now_clock() -> str:
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return _now_clock_util()
 
     def _typing_probe_enabled(self) -> bool:
         return self.settings.app_mode == "debug" and self.settings.show_interaction_logs
@@ -752,7 +754,7 @@ class DiscordBot:
         end = self._parse_time(self.settings.quiet_end)
         if start is None or end is None:
             return False
-        now = datetime.now().time()
+        now = _now().time()
         if start <= end:
             return start <= now < end
         # Crosses midnight, e.g. 23:00 -> 07:00
@@ -763,7 +765,7 @@ class DiscordBot:
         end = self._parse_time(self.settings.quiet_end)
         if end is None:
             return 0.0
-        now = datetime.now()
+        now = _now()
         end_today = now.replace(hour=end.hour, minute=end.minute, second=0, microsecond=0)
         if end_today <= now:
             # End is tomorrow
