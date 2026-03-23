@@ -307,19 +307,28 @@ class DiscordBot:
         out = [p.strip() for p in parts if p and p.strip()]
         return out or [stripped]
 
-    async def _reply_by_sentence(self, anchor_message: discord.Message, reply: str) -> None:
+    async def _reply_by_sentence(
+        self,
+        anchor_message: discord.Message | None,
+        reply: str,
+        *,
+        channel: discord.abc.Messageable | None = None,
+    ) -> None:
         sentences = self._split_sentences(reply)
         if not sentences:
             return
+        target_channel = channel or (anchor_message.channel if anchor_message else None)
+        if target_channel is None:
+            return
         for idx, sentence in enumerate(sentences):
-            if idx == 0:
+            if idx == 0 and anchor_message is not None:
                 await anchor_message.reply(
                     sentence,
                     mention_author=False,
                     allowed_mentions=AllowedMentions.none(),
                 )
             else:
-                await anchor_message.channel.send(
+                await target_channel.send(
                     sentence,
                     allowed_mentions=AllowedMentions.none(),
                 )
@@ -510,14 +519,7 @@ class DiscordBot:
 
         async def _send_proactive(reply: str) -> None:
             try:
-                sentences = self._split_sentences(reply)
-                for idx, sentence in enumerate(sentences):
-                    await channel.send(
-                        sentence,
-                        allowed_mentions=AllowedMentions.none(),
-                    )
-                    if idx < len(sentences) - 1:
-                        await asyncio.sleep(0.8)
+                await self._reply_by_sentence(None, reply, channel=channel)
                 self.history_store.append_entry(
                     channel_id=channel_id,
                     role="assistant",
