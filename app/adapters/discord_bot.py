@@ -74,6 +74,7 @@ class DiscordBot:
         intents = discord.Intents.default()
         intents.message_content = True
         intents.typing = True
+        intents.reactions = True
         self.client = discord.Client(intents=intents)
         self.tree = app_commands.CommandTree(self.client)
         self._commands_synced = False
@@ -81,6 +82,7 @@ class DiscordBot:
         self.client.event(self.on_ready)
         self.client.event(self.on_message)
         self.client.event(self.on_typing)
+        self.client.event(self.on_raw_reaction_add)
         self.client.event(self.on_guild_channel_delete)
         self._register_app_commands()
 
@@ -906,12 +908,46 @@ class DiscordBot:
         self._touch_pending_activity(channel.id, user.id)
         self._session_engine.switch_to_long_timer(channel.id, user.id)
 
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
+        if payload.user_id == self.client.user.id:  # type: ignore[union-attr]
+            return
+        channel = self.client.get_channel(payload.channel_id)
+        if channel is None:
+            return
+        try:
+            message = await channel.fetch_message(payload.message_id)  # type: ignore[union-attr]
+        except Exception:  # noqa: BLE001
+            return
+        user = payload.member or self.client.get_user(payload.user_id)
+        if user is None or user.bot:
+            return
+        emoji_str = str(payload.emoji)
+        msg_preview = (message.content or "")[:60]
+        if msg_preview:
+            text = f"[对消息「{msg_preview}」的反应: {emoji_str}]"
+        else:
+            text = f"[反应: {emoji_str}]"
+        if self.settings.typing_wait:
+            self._touch_pending_message(
+                message=message,
+                channel_id=payload.channel_id,
+                user_id=payload.user_id,
+                user_label=self._user_label(user),
+                text=text,
+            )
+        else:
+            asyncio.create_task(self._reply_immediate(message, text))
+
     async def on_message(self, message: discord.Message) -> None:
         await self.reload_settings_if_needed()
         if message.author.bot:
             return
 
         text = (message.content or "").strip()
+        # Handle sticker-only messages
+        if not text and message.stickers:
+            names = "、".join(s.name for s in message.stickers)
+            text = f"[贴纸: {names}]"
         if not text:
             return
 
