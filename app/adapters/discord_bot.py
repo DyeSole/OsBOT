@@ -570,9 +570,6 @@ class DiscordBot:
             pending_messages=[],
         )
         is_llm_timer = seconds != self.proactive_idle_seconds
-        # Proactive skips if no conversation context
-        if not is_llm_timer and not transcript:
-            return
         proactive_prompt = _load_proactive_prompt()
         if is_llm_timer:
             timer_note = f"[system: your set_timer for {seconds}s has expired]\n{proactive_prompt}"
