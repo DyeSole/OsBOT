@@ -221,6 +221,7 @@ class LLMClient:
             snippet = resp.text[:200].replace("\n", " ")
             raise RuntimeError(f"llm http {resp.status_code}: {snippet}")
 
+        resp.encoding = "utf-8"
         if self._is_anthropic_messages_api():
             return self._parse_stream_anthropic(resp, on_text)
         return self._parse_stream_openai(resp, on_text)
