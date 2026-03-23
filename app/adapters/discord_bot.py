@@ -925,21 +925,34 @@ class DiscordBot:
             if h or m:
                 self.logger.info(f"🧹 cleaned_orphan channel_id={cid} history={h} memory={m}")
 
-    async def _delete_bot_reply_messages(
+    async def _collect_bot_reply_batch(
         self,
         channel: discord.abc.Messageable,
         anchor: discord.Message,
-    ) -> None:
-        """Delete a bot reply from Discord: the anchor message + all consecutive bot messages after it."""
+    ) -> list[discord.Message] | None:
+        """Find the full batch of consecutive bot messages around the anchor.
+
+        Returns the batch if it is the last reply in the channel (no user
+        messages after it), otherwise returns None.
+        """
         bot_id = self.client.user.id  # type: ignore[union-attr]
-        # Collect bot messages after the anchor (same reply batch)
-        to_delete = [anchor]
-        async for msg in channel.history(after=anchor, limit=50):  # type: ignore[union-attr]
+        batch = [anchor]
+        # Scan backward: collect consecutive bot messages before the anchor
+        async for msg in channel.history(before=anchor, limit=50):  # type: ignore[union-attr]
             if msg.author.id == bot_id:
-                to_delete.append(msg)
+                batch.append(msg)
             else:
                 break
-        for msg in to_delete:
+        # Scan forward: collect consecutive bot messages after the anchor
+        async for msg in channel.history(after=anchor, limit=50):  # type: ignore[union-attr]
+            if msg.author.id == bot_id:
+                batch.append(msg)
+            else:
+                return None  # not the last reply — user message found after batch
+        return batch
+
+    async def _delete_messages(self, messages: list[discord.Message]) -> None:
+        for msg in messages:
             try:
                 await msg.delete()
             except Exception:  # noqa: BLE001
@@ -1008,16 +1021,15 @@ class DiscordBot:
         else:
             return  # no user entry found
 
-        # Delete bot's Discord messages: find them after the edited user message
+        # Delete bot's Discord messages after the edited user message
+        to_delete: list[discord.Message] = []
         bot_id = self.client.user.id  # type: ignore[union-attr]
         async for msg in after.channel.history(after=after, limit=50):
             if msg.author.id == bot_id:
-                try:
-                    await msg.delete()
-                except Exception:  # noqa: BLE001
-                    pass
+                to_delete.append(msg)
             else:
                 break
+        await self._delete_messages(to_delete)
 
         # Update user's last message, delete bot reply from DB, regenerate
         self.history_store.replace_last_by_role(
@@ -1078,7 +1090,10 @@ class DiscordBot:
         # Reroll: user reacts with 🔄 on a bot message
         if emoji_str == "\U0001f504" and message.author.id == self.client.user.id:  # type: ignore[union-attr]
             channel_id = payload.channel_id
-            await self._delete_bot_reply_messages(channel, message)  # type: ignore[arg-type]
+            batch = await self._collect_bot_reply_batch(channel, message)  # type: ignore[arg-type]
+            if batch is None:
+                return  # not the last reply, ignore
+            await self._delete_messages(batch)
             self._delete_bot_reply_db(channel_id)
             await self._regenerate_reply(channel_id, channel)  # type: ignore[arg-type]
             return
