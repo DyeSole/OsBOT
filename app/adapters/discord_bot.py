@@ -433,6 +433,7 @@ class DiscordBot:
         )
 
         try:
+            await pending.channel.trigger_typing()
             response = await self._stream_and_send(
                 pending.anchor_message, pending.channel, messages,
             )
