@@ -129,8 +129,7 @@ class DiscordBot:
                 "\n".join(
                     [
                         "压缩完成。",
-                        f"segment_id: {segment.get('segment_id', '')}",
-                        f"source_id: {segment.get('source_id', '')}",
+                        f"id: {segment.get('id', '')}",
                         f"范围: {segment.get('start_time', '')} -> {segment.get('end_time', '')}",
                         f"条数: {segment.get('message_count', 0)}",
                         f"关键词: {keywords_text}",

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -52,30 +51,21 @@ class CompressionService:
 
         start_time = messages[0]["time"]
         end_time = messages[-1]["time"]
-        source_id = self.compression_store.build_source_id(
-            channel_id=channel_id,
-            start_time=start_time,
-            end_time=end_time,
-        )
-        segment_id = self.compression_store.build_segment_id()
-        segment_payload = self._build_segment_payload(
-            source_id=source_id,
-            segment_id=segment_id,
-            start_time=start_time,
-            end_time=end_time,
-            message_count=len(messages),
-            summary_result=llm_result,
-            source_hash=self.compression_store.build_source_hash(messages),
-        )
+        segment_id = self.compression_store.build_segment_id(start_time)
 
         self.compression_store.save_raw_archive(
             channel_id=channel_id,
-            source_id=source_id,
+            segment_id=segment_id,
             messages=messages,
         )
         segment = self.compression_store.save_summary_segment(
             channel_id=channel_id,
-            **segment_payload,
+            segment_id=segment_id,
+            start_time=start_time,
+            end_time=end_time,
+            message_count=len(messages),
+            summary_text=str(llm_result.get("summary_text", "")).strip(),
+            keywords=self._normalize_keywords(llm_result.get("keywords")),
         )
         self.compression_store.update_index(
             channel_id=channel_id,
@@ -104,29 +94,6 @@ class CompressionService:
         return {
             "summary_text": fallback,
             "keywords": keywords,
-        }
-
-    def _build_segment_payload(
-        self,
-        *,
-        source_id: str,
-        segment_id: str,
-        start_time: str,
-        end_time: str,
-        message_count: int,
-        summary_result: dict[str, Any],
-        source_hash: str,
-    ) -> dict[str, Any]:
-        return {
-            "source_id": source_id,
-            "segment_id": segment_id,
-            "start_time": start_time,
-            "end_time": end_time,
-            "message_count": message_count,
-            "summary_text": str(summary_result.get("summary_text", "")).strip(),
-            "keywords": self._normalize_keywords(summary_result.get("keywords")),
-            "generated_at": self._now_clock(),
-            "source_hash": source_hash,
         }
 
     @staticmethod
@@ -167,7 +134,3 @@ class CompressionService:
             except Exception:
                 return {}
         return {}
-
-    @staticmethod
-    def _now_clock() -> str:
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
