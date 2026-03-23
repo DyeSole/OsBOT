@@ -439,6 +439,7 @@ class DiscordBot:
             self._variable_timer_fire(channel_id, channel, seconds)
         )
         self._variable_timers[channel_id] = (new_task, deadline)
+        self._log_typing(f"⏳ timer_start ch={channel_id} s={seconds}")
 
     def _schedule_alarm(
         self,
