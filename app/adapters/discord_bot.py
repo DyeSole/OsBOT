@@ -608,8 +608,6 @@ class DiscordBot:
 
         # Handle any new tool calls (e.g. AI sets another timer)
         self._handle_tool_calls(response, channel_id, channel)
-        # Restart 5min timer after variable timer fires
-        self._schedule_proactive(channel_id, channel)
 
     async def _alarm_fire(
         self,
@@ -668,7 +666,6 @@ class DiscordBot:
                 self.logger.error("UNKNOWN", "failed to send alarm message", exc=exc)
 
         self._handle_tool_calls(response, channel_id, channel)
-        self._schedule_proactive(channel_id, channel)
 
     def _schedule_proactive(self, channel_id: int, channel: discord.abc.Messageable) -> None:
         """Schedule a proactive idle timer for a channel after bot replies."""
@@ -686,8 +683,6 @@ class DiscordBot:
                     )
                     self.logger.info(f"💬 proactive_sent channel={channel_id}")
                 self._handle_tool_calls(response, channel_id, channel)
-                # Reschedule after proactive message so it can fire again
-                self._schedule_proactive(channel_id, channel)
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send proactive message", exc=exc)
 
