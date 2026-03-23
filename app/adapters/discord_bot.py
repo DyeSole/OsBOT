@@ -67,6 +67,7 @@ class DiscordBot:
         self._variable_timers: dict[int, tuple[asyncio.Task, float]] = {}  # (task, deadline)
         self._alarms: dict[int, list[asyncio.Task]] = {}  # per-channel, multiple allowed
         self._pending_alarm_reasons: dict[int, list[str]] = {}  # buffered for next timer fire
+        self._pending_reactions: dict[int, list[str]] = {}  # buffered reactions for next timer fire
         self._quiet_buffered_reasons: dict[int, list[str]] = {}  # buffered during quiet hours
         self._quiet_channels: dict[int, discord.abc.Messageable] = {}  # channel refs for flush
         self._quiet_flush_task: asyncio.Task | None = None
@@ -624,6 +625,11 @@ class DiscordBot:
             timer_note += (
                 f"\n[system: 以下闹钟已到期，你必须提醒用户这些事情，不可以沉默]\n{alarm_lines}"
             )
+        # Attach any buffered reactions
+        pending_reactions = self._pending_reactions.pop(channel_id, [])
+        if pending_reactions:
+            reaction_lines = "\n".join(f"- {r}" for r in pending_reactions)
+            timer_note += f"\n[system: 用户在你空闲期间添加了以下表情反应]\n{reaction_lines}"
         if transcript:
             transcript = f"{transcript}\n{timer_note}"
         else:
@@ -911,6 +917,9 @@ class DiscordBot:
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
         if payload.user_id == self.client.user.id:  # type: ignore[union-attr]
             return
+        user = payload.member or self.client.get_user(payload.user_id)
+        if user is None or user.bot:
+            return
         channel = self.client.get_channel(payload.channel_id)
         if channel is None:
             return
@@ -918,25 +927,28 @@ class DiscordBot:
             message = await channel.fetch_message(payload.message_id)  # type: ignore[union-attr]
         except Exception:  # noqa: BLE001
             return
-        user = payload.member or self.client.get_user(payload.user_id)
-        if user is None or user.bot:
-            return
+
         emoji_str = str(payload.emoji)
         msg_preview = (message.content or "")[:60]
         if msg_preview:
-            text = f"[对消息「{msg_preview}」的反应: {emoji_str}]"
+            reaction_text = f"[对消息「{msg_preview}」的反应: {emoji_str}]"
         else:
-            text = f"[反应: {emoji_str}]"
-        if self.settings.typing_wait:
-            self._touch_pending_message(
-                message=message,
-                channel_id=payload.channel_id,
-                user_id=payload.user_id,
-                user_label=self._user_label(user),
-                text=text,
-            )
-        else:
-            asyncio.create_task(self._reply_immediate(message, text))
+            reaction_text = f"[反应: {emoji_str}]"
+
+        channel_id = payload.channel_id
+        vt = self._variable_timers.get(channel_id)
+        if vt is not None:
+            _, deadline = vt
+            remaining = deadline - time.monotonic()
+            if remaining < self.proactive_idle_seconds:
+                # Buffer reaction — will be attached to the next timer fire
+                self._pending_reactions.setdefault(channel_id, []).append(reaction_text)
+                self.logger.info(
+                    f"😊 reaction_buffered ch={channel_id} remaining={remaining:.0f}s"
+                )
+                return
+
+        # 占位：表情处理逻辑
 
     async def on_message(self, message: discord.Message) -> None:
         await self.reload_settings_if_needed()
