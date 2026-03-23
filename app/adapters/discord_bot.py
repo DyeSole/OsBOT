@@ -681,9 +681,10 @@ class DiscordBot:
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send proactive message", exc=exc)
 
-        # Don't schedule proactive if a variable timer is already running
-        if channel_id in self._variable_timers:
-            return
+        # Proactive has priority — cancel any variable timer
+        old_vt = self._variable_timers.pop(channel_id, None)
+        if old_vt is not None and not old_vt.done():
+            old_vt.cancel()
         self.proactive_service.schedule(channel_id, _send_proactive)
 
     async def _typing_watchdog(self) -> None:
