@@ -925,16 +925,28 @@ class DiscordBot:
             if h or m:
                 self.logger.info(f"🧹 cleaned_orphan channel_id={cid} history={h} memory={m}")
 
-    async def _delete_bot_reply(self, channel_id: int) -> None:
-        """Delete the last bot reply from both Discord and DB."""
-        # Delete Discord messages
-        msgs = self._last_bot_msgs.pop(channel_id, [])
-        for msg in msgs:
+    async def _delete_bot_reply_messages(
+        self,
+        channel: discord.abc.Messageable,
+        anchor: discord.Message,
+    ) -> None:
+        """Delete a bot reply from Discord: the anchor message + all consecutive bot messages after it."""
+        bot_id = self.client.user.id  # type: ignore[union-attr]
+        # Collect bot messages after the anchor (same reply batch)
+        to_delete = [anchor]
+        async for msg in channel.history(after=anchor, limit=50):  # type: ignore[union-attr]
+            if msg.author.id == bot_id:
+                to_delete.append(msg)
+            else:
+                break
+        for msg in to_delete:
             try:
                 await msg.delete()
             except Exception:  # noqa: BLE001
                 pass
-        # Delete last assistant entry from DB
+
+    def _delete_bot_reply_db(self, channel_id: int) -> None:
+        """Delete the last assistant entry from DB."""
         self.history_store.pop_last_by_role(channel_id=channel_id, role="assistant")
 
     async def _regenerate_reply(
@@ -996,11 +1008,22 @@ class DiscordBot:
         else:
             return  # no user entry found
 
-        # Update user's last message, delete bot reply, regenerate
+        # Delete bot's Discord messages: find them after the edited user message
+        bot_id = self.client.user.id  # type: ignore[union-attr]
+        async for msg in after.channel.history(after=after, limit=50):
+            if msg.author.id == bot_id:
+                try:
+                    await msg.delete()
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                break
+
+        # Update user's last message, delete bot reply from DB, regenerate
         self.history_store.replace_last_by_role(
             channel_id=channel_id, role="user", new_content=new_text,
         )
-        await self._delete_bot_reply(channel_id)
+        self._delete_bot_reply_db(channel_id)
         await self._regenerate_reply(channel_id, after.channel)
 
     async def on_ready(self) -> None:
@@ -1055,7 +1078,8 @@ class DiscordBot:
         # Reroll: user reacts with 🔄 on a bot message
         if emoji_str == "\U0001f504" and message.author.id == self.client.user.id:  # type: ignore[union-attr]
             channel_id = payload.channel_id
-            await self._delete_bot_reply(channel_id)
+            await self._delete_bot_reply_messages(channel, message)  # type: ignore[arg-type]
+            self._delete_bot_reply_db(channel_id)
             await self._regenerate_reply(channel_id, channel)  # type: ignore[arg-type]
             return
 
