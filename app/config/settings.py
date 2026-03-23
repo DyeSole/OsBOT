@@ -24,6 +24,7 @@ class Settings:
     session_timeout_seconds: float = 15.0
     typing_detect_delay_seconds: float = 1.0
     reset_timer_seconds: float = 2.5
+    proactive_idle_seconds: float = 300.0
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -72,6 +73,7 @@ def load_settings() -> Settings:
         _env_value("TYPING_DETECT_DELAY_SECONDS", env_file, "1.0").strip() or "1.0"
     )
     reset_timer_seconds = float(_env_value("RESET_TIMER_SECONDS", env_file, "2.5").strip() or "2.5")
+    proactive_idle_seconds = float(_env_value("PROACTIVE_IDLE_SECONDS", env_file, "300.0").strip() or "300.0")
 
     return Settings(
         bot_key=bot_key,
@@ -86,6 +88,7 @@ def load_settings() -> Settings:
         session_timeout_seconds=max(1.0, session_timeout_seconds),
         typing_detect_delay_seconds=max(0.0, typing_detect_delay_seconds),
         reset_timer_seconds=max(0.1, reset_timer_seconds),
+        proactive_idle_seconds=max(0.0, proactive_idle_seconds),
     )
 
 
@@ -108,6 +111,7 @@ def summarize_settings(settings: Settings) -> dict[str, Any]:
         "SESSION_TIMEOUT_SECONDS": settings.session_timeout_seconds,
         "TYPING_DETECT_DELAY_SECONDS": settings.typing_detect_delay_seconds,
         "RESET_TIMER_SECONDS": settings.reset_timer_seconds,
+        "PROACTIVE_IDLE_SECONDS": settings.proactive_idle_seconds,
         "API_KEY_SET": bool(settings.api_key),
         "DISCORD_BOT_TOKEN_SET": bool(settings.discord_bot_token),
     }

@@ -15,6 +15,7 @@ from app.core.session_engine import SessionEngine
 from app.infra.storage import ChatHistoryStore, CompressionStore
 from app.services.compression_service import CompressionService
 from app.services.context_builder import ContextBuilder
+from app.services.proactive_service import ProactiveService
 from app.services.prompt_service import PromptService
 from app.services.reply_service import ReplyService
 
@@ -159,6 +160,12 @@ class DiscordBot:
         )
         self.prompt_service = PromptService()
         self.context_builder = ContextBuilder(self.history_store, self.compression_store)
+        self.proactive_service = ProactiveService(
+            idle_seconds=settings.proactive_idle_seconds,
+            reply_service=self.reply_service,
+            context_builder=self.context_builder,
+            history_store=self.history_store,
+        )
         self.session_timeout_seconds = settings.session_timeout_seconds
         self.typing_timeout_seconds = settings.session_timeout_seconds
         self.typing_detect_delay_seconds = settings.typing_detect_delay_seconds
@@ -251,6 +258,7 @@ class DiscordBot:
         self.typing_timeout_seconds = settings.session_timeout_seconds
         self.typing_detect_delay_seconds = settings.typing_detect_delay_seconds
         self.reset_timer_seconds = settings.reset_timer_seconds
+        self.proactive_service.update_idle_seconds(settings.proactive_idle_seconds)
         if settings.discord_bot_token != old_token:
             self.logger.error(
                 "CONFIG",
@@ -483,6 +491,8 @@ class DiscordBot:
             self._log_typing(
                 f"🚀 api_sent user={pending.user_label} chunks={len(pending.chunks)} merged_len={len(merged_text)}"
             )
+            # Start proactive idle timer after bot replies
+            self._schedule_proactive(channel_id, pending.channel)
         except Exception as exc:  # noqa: BLE001
             # Keep this as UNKNOWN to preserve your current error filtering behavior.
             self.logger.error("UNKNOWN", "failed to send reply", exc=exc)
@@ -494,6 +504,34 @@ class DiscordBot:
                 )
             except Exception:
                 await pending.channel.send("我刚刚有点卡住了，等我一下再试试。")
+
+    def _schedule_proactive(self, channel_id: int, channel: discord.abc.Messageable) -> None:
+        """Schedule a proactive idle timer for a channel after bot replies."""
+
+        async def _send_proactive(reply: str) -> None:
+            try:
+                sentences = self._split_sentences(reply)
+                for idx, sentence in enumerate(sentences):
+                    await channel.send(
+                        sentence,
+                        allowed_mentions=AllowedMentions.none(),
+                    )
+                    if idx < len(sentences) - 1:
+                        await asyncio.sleep(0.8)
+                self.history_store.append_entry(
+                    channel_id=channel_id,
+                    role="assistant",
+                    username=self.settings.bot_key,
+                    time=self._now_clock(),
+                    content=reply,
+                )
+                self.logger.info(f"💬 proactive_sent channel={channel_id}")
+                # Reschedule after proactive message so it can fire again
+                self._schedule_proactive(channel_id, channel)
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("UNKNOWN", "failed to send proactive message", exc=exc)
+
+        self.proactive_service.schedule(channel_id, _send_proactive)
 
     async def _typing_watchdog(self) -> None:
         while True:
@@ -547,6 +585,8 @@ class DiscordBot:
         self._last_message_ts[key] = time.monotonic()
 
         self._stop_typing_session(message.channel.id, message.author.id, reason="message")
+        # Reset proactive idle timer — user is active
+        self.proactive_service.cancel(message.channel.id)
         self._touch_pending_message(
             message=message,
             channel_id=message.channel.id,
