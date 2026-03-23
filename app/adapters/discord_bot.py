@@ -440,7 +440,7 @@ class DiscordBot:
         )
 
         try:
-            await pending.channel.trigger_typing()
+            await pending.channel.typing()
             response = await self._stream_and_send(
                 pending.anchor_message, pending.channel, messages,
             )
@@ -505,7 +505,7 @@ class DiscordBot:
         self.logger.info(f"✅ api_request_sent (immediate) includes={text_one_line}")
 
         try:
-            await message.channel.trigger_typing()
+            await message.channel.typing()
             response = await self._stream_and_send(
                 message, message.channel, messages,
             )
