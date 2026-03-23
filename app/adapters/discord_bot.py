@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import queue as _queue
 import re
 import time
 from dataclasses import dataclass
@@ -226,6 +227,72 @@ class DiscordBot:
             if idx < len(sentences) - 1:
                 await asyncio.sleep(0.8)
 
+    async def _stream_and_send(
+        self,
+        anchor_message: discord.Message | None,
+        channel: discord.abc.Messageable,
+        messages: list[dict[str, str]],
+    ) -> LLMResponse:
+        """Stream LLM response, sending each sentence to Discord as it completes."""
+        from app.infra.llm_client import LLMResponse
+
+        q: _queue.Queue[tuple[str, object]] = _queue.Queue()
+
+        def _produce() -> None:
+            try:
+                resp = self.reply_service.stream_reply_with_tools(
+                    messages, lambda chunk: q.put(("text", chunk)),
+                )
+                q.put(("done", resp))
+            except Exception as exc:  # noqa: BLE001
+                q.put(("error", exc))
+
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, _produce)
+
+        buffer = ""
+        is_first = True
+
+        while True:
+            try:
+                kind, value = q.get_nowait()
+            except _queue.Empty:
+                await asyncio.sleep(0.05)
+                continue
+
+            if kind == "text":
+                buffer += value
+                parts = self._split_sentences(buffer)
+                if len(parts) > 1:
+                    for s in parts[:-1]:
+                        if is_first and anchor_message is not None:
+                            await anchor_message.reply(
+                                s, mention_author=False,
+                                allowed_mentions=AllowedMentions.none(),
+                            )
+                        else:
+                            await channel.send(
+                                s, allowed_mentions=AllowedMentions.none(),
+                            )
+                        is_first = False
+                    buffer = parts[-1]
+            elif kind == "done":
+                if buffer.strip():
+                    if is_first and anchor_message is not None:
+                        await anchor_message.reply(
+                            buffer.strip(), mention_author=False,
+                            allowed_mentions=AllowedMentions.none(),
+                        )
+                    else:
+                        await channel.send(
+                            buffer.strip(), allowed_mentions=AllowedMentions.none(),
+                        )
+                return value  # type: ignore[return-value]
+            elif kind == "error":
+                raise value  # type: ignore[misc]
+
+        return LLMResponse(text="")  # unreachable
+
     @staticmethod
     def _channel_label(channel) -> str:  # type: ignore[no-untyped-def]
         name = getattr(channel, "name", None)
@@ -366,22 +433,11 @@ class DiscordBot:
         )
 
         try:
-            async with pending.channel.typing():
-                response = await asyncio.to_thread(self.reply_service.generate_reply_with_tools, messages)
-            reply = response.text
+            response = await self._stream_and_send(
+                pending.anchor_message, pending.channel, messages,
+            )
+            reply = (response.text or "").strip()
             if reply:
-                try:
-                    await self._reply_by_sentence(pending.anchor_message, reply)
-                except Exception as exc:
-                    self.logger.error("LOGIC", f"reply() failed: {exc}")
-                    try:
-                        await self._reply_by_sentence(pending.anchor_message, reply)
-                    except Exception as exc2:
-                        self.logger.error("LOGIC", f"reply() fallback failed: {exc2}")
-                        await pending.channel.send(
-                            reply,
-                            allowed_mentions=AllowedMentions.none(),
-                        )
                 self.history_store.append_entry(
                     channel_id=channel_id,
                     role="assistant",
@@ -582,7 +638,7 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-                self.logger.info(f"⏰ alarm_sent channel={channel_id} reason={reason}")
+                self._log_typing(f"⏰ alarm_sent ch={channel_id} reason={reason}")
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send alarm message", exc=exc)
 

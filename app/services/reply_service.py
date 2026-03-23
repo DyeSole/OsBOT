@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.config.settings import Settings
 from app.infra.llm_client import LLMClient, LLMResponse
@@ -69,4 +69,19 @@ class ReplyService:
             messages=messages,
             system_prompt=load_system_prompt(),
             tools=TOOLS,
+        )
+
+    def stream_reply_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        on_text: Callable[[str], None],
+    ) -> LLMResponse:
+        if not messages:
+            return LLMResponse(text="哎，我字呢？")
+
+        return self.client.stream_with_tools(
+            messages=messages,
+            system_prompt=load_system_prompt(),
+            tools=TOOLS,
+            on_text=on_text,
         )

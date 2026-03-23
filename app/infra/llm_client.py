@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -127,7 +128,6 @@ class LLMClient:
             func = tc.get("function") or {}
             name = func.get("name", "")
             args_raw = func.get("arguments", "{}")
-            import json
             try:
                 args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
             except (json.JSONDecodeError, TypeError):
@@ -193,3 +193,116 @@ class LLMClient:
         """Returns structured response with text and tool calls."""
         data = self._do_request(messages, system_prompt, tools)
         return self._parse_response(data)
+
+    def stream_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        system_prompt: str,
+        tools: list[dict[str, Any]],
+        on_text: Callable[[str], None],
+    ) -> LLMResponse:
+        """Stream response, calling on_text for each text delta. Returns full LLMResponse."""
+        if not self.base_url:
+            raise ValueError("missing BASE_URL")
+        if not self.api_key:
+            raise ValueError("missing API_KEY")
+
+        payload = self._payload(messages, system_prompt, tools)
+        payload["stream"] = True
+
+        resp = requests.post(
+            self._request_url(),
+            headers=self._headers(),
+            json=payload,
+            timeout=90,
+            stream=True,
+        )
+        if resp.status_code >= 400:
+            snippet = resp.text[:200].replace("\n", " ")
+            raise RuntimeError(f"llm http {resp.status_code}: {snippet}")
+
+        if self._is_anthropic_messages_api():
+            return self._parse_stream_anthropic(resp, on_text)
+        return self._parse_stream_openai(resp, on_text)
+
+    def _parse_stream_anthropic(
+        self, resp: requests.Response, on_text: Callable[[str], None],
+    ) -> LLMResponse:
+        text_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+        current_tool_name = ""
+        current_tool_json = ""
+
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data: "):
+                continue
+            data = json.loads(line[6:])
+            evt = data.get("type", "")
+
+            if evt == "content_block_start":
+                block = data.get("content_block", {})
+                if block.get("type") == "tool_use":
+                    current_tool_name = block.get("name", "")
+                    current_tool_json = ""
+            elif evt == "content_block_delta":
+                delta = data.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    chunk = delta.get("text", "")
+                    if chunk:
+                        text_parts.append(chunk)
+                        on_text(chunk)
+                elif delta.get("type") == "input_json_delta":
+                    current_tool_json += delta.get("partial_json", "")
+            elif evt == "content_block_stop":
+                if current_tool_name:
+                    try:
+                        args = json.loads(current_tool_json) if current_tool_json else {}
+                    except (json.JSONDecodeError, TypeError):
+                        args = {}
+                    tool_calls.append(ToolCall(name=current_tool_name, input=args))
+                    current_tool_name = ""
+                    current_tool_json = ""
+
+        return LLMResponse(text="".join(text_parts).strip(), tool_calls=tool_calls)
+
+    def _parse_stream_openai(
+        self, resp: requests.Response, on_text: Callable[[str], None],
+    ) -> LLMResponse:
+        text_parts: list[str] = []
+        # {index: {"name": str, "args": str}}
+        tool_acc: dict[int, dict[str, str]] = {}
+
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data: "):
+                continue
+            data_str = line[6:]
+            if data_str.strip() == "[DONE]":
+                break
+            data = json.loads(data_str)
+            choices = data.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta", {})
+            content = delta.get("content")
+            if content:
+                text_parts.append(content)
+                on_text(content)
+            for tc in delta.get("tool_calls") or []:
+                idx = tc.get("index", 0)
+                if idx not in tool_acc:
+                    tool_acc[idx] = {"name": "", "args": ""}
+                func = tc.get("function") or {}
+                if func.get("name"):
+                    tool_acc[idx]["name"] = func["name"]
+                if func.get("arguments"):
+                    tool_acc[idx]["args"] += func["arguments"]
+
+        tool_calls: list[ToolCall] = []
+        for _, v in sorted(tool_acc.items()):
+            try:
+                args = json.loads(v["args"]) if v["args"] else {}
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            tool_calls.append(ToolCall(name=v["name"], input=args))
+
+        return LLMResponse(text="".join(text_parts).strip(), tool_calls=tool_calls)
