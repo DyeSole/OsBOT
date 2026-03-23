@@ -23,11 +23,11 @@ class Settings:
     show_interaction_logs: bool = True
     session_timeout_seconds: float = 15.0
     typing_detect_delay_seconds: float = 1.0
-    reset_timer_seconds: float = 2.5
+    reset_timer_seconds: float = 3.0
     proactive_idle_seconds: float = 300.0
     typing_wait: bool = True   # True = wait for typing idle, False = reply immediately
     split_mode: str = "chat"  # "chat" = split by newline, "novel" = no split
-    chat_reply_delay_seconds: float = 1.5  # pause between split messages in chat mode
+    chat_reply_delay_seconds: float = 0.8  # pause between split messages in chat mode
     quiet_enabled: bool = False
     quiet_start: str = ""   # e.g. "23:00"
     quiet_end: str = ""     # e.g. "07:00"
@@ -78,11 +78,11 @@ def load_settings() -> Settings:
     typing_detect_delay_seconds = float(
         _env_value("TYPING_DETECT_DELAY_SECONDS", env_file, "1.0").strip() or "1.0"
     )
-    reset_timer_seconds = float(_env_value("RESET_TIMER_SECONDS", env_file, "2.5").strip() or "2.5")
+    reset_timer_seconds = float(_env_value("RESET_TIMER_SECONDS", env_file, "3.0").strip() or "3.0")
     proactive_idle_seconds = float(_env_value("PROACTIVE_IDLE_SECONDS", env_file, "300.0").strip() or "300.0")
     typing_wait = _env_bool("TYPING_WAIT", env_file, True)
     chat_reply_delay_seconds = float(
-        _env_value("CHAT_REPLY_DELAY_SECONDS", env_file, "1.5").strip() or "1.5"
+        _env_value("CHAT_REPLY_DELAY_SECONDS", env_file, "0.8").strip() or "0.8"
     )
     split_mode = _env_value("SPLIT_MODE", env_file, "chat").strip().lower() or "chat"
     if split_mode not in ("chat", "novel"):
