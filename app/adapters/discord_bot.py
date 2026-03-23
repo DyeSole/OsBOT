@@ -885,6 +885,17 @@ class DiscordBot:
         text = (message.content or "").strip()
         if not text:
             return
+
+        # Prepend quoted message content when user replies to a message
+        ref = message.reference
+        if ref and ref.message_id:
+            try:
+                quoted = ref.resolved or await message.channel.fetch_message(ref.message_id)
+                if quoted and getattr(quoted, "content", None):
+                    quote_author = self._user_label(quoted.author)
+                    text = f"[引用 {quote_author} 的消息: {quoted.content}]\n{text}"
+            except Exception:  # noqa: BLE001
+                pass
         key = self._typing_key(message.channel.id, message.author.id)
         self._last_message_ts[key] = time.monotonic()
 
