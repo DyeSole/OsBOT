@@ -15,7 +15,7 @@ from app.core.session_engine import SessionEngine
 from app.infra.storage import ChatHistoryStore, CompressionStore
 from app.services.compression_service import CompressionService
 from app.services.context_builder import ContextBuilder
-from app.services.proactive_service import ProactiveService, _load_proactive_prompt
+from app.services.proactive_service import _load_proactive_prompt
 from app.services.prompt_service import PromptService
 from app.services.reply_service import ReplyService
 
@@ -160,12 +160,7 @@ class DiscordBot:
         )
         self.prompt_service = PromptService()
         self.context_builder = ContextBuilder(self.history_store, self.compression_store)
-        self.proactive_service = ProactiveService(
-            idle_seconds=settings.proactive_idle_seconds,
-            reply_service=self.reply_service,
-            context_builder=self.context_builder,
-            history_store=self.history_store,
-        )
+        self.proactive_idle_seconds = settings.proactive_idle_seconds
         self.session_timeout_seconds = settings.session_timeout_seconds
         self.typing_timeout_seconds = settings.session_timeout_seconds
         self.typing_detect_delay_seconds = settings.typing_detect_delay_seconds
@@ -260,7 +255,7 @@ class DiscordBot:
         self.typing_timeout_seconds = settings.session_timeout_seconds
         self.typing_detect_delay_seconds = settings.typing_detect_delay_seconds
         self.reset_timer_seconds = settings.reset_timer_seconds
-        self.proactive_service.update_idle_seconds(settings.proactive_idle_seconds)
+        self.proactive_idle_seconds = settings.proactive_idle_seconds
         if settings.discord_bot_token != old_token:
             self.logger.error(
                 "CONFIG",
@@ -661,29 +656,10 @@ class DiscordBot:
         self._handle_tool_calls(response, channel_id, channel)
 
     def _schedule_proactive(self, channel_id: int, channel: discord.abc.Messageable) -> None:
-        """Schedule a proactive idle timer for a channel after bot replies."""
-
-        async def _send_proactive(reply: str, response) -> None:
-            try:
-                if reply:
-                    await self._reply_by_sentence(None, reply, channel=channel)
-                    self.history_store.append_entry(
-                        channel_id=channel_id,
-                        role="assistant",
-                        username=self.settings.bot_key,
-                        time=self._now_clock(),
-                        content=reply,
-                    )
-                    self.logger.info(f"💬 proactive_sent channel={channel_id}")
-                self._handle_tool_calls(response, channel_id, channel)
-            except Exception as exc:  # noqa: BLE001
-                self.logger.error("UNKNOWN", "failed to send proactive message", exc=exc)
-
-        # Proactive has priority — cancel any variable timer
-        old_vt = self._variable_timers.pop(channel_id, None)
-        if old_vt is not None and not old_vt.done():
-            old_vt.cancel()
-        self.proactive_service.schedule(channel_id, _send_proactive)
+        """Schedule proactive idle timer — uses the same slot as variable timer."""
+        if self.proactive_idle_seconds <= 0:
+            return
+        self._schedule_variable_timer(channel_id, channel, self.proactive_idle_seconds)
 
     async def _typing_watchdog(self) -> None:
         while True:
@@ -737,9 +713,7 @@ class DiscordBot:
         self._last_message_ts[key] = time.monotonic()
 
         self._stop_typing_session(message.channel.id, message.author.id, reason="message")
-        # Reset proactive idle timer — user is active
-        self.proactive_service.cancel(message.channel.id)
-        # Cancel variable timer — user is active
+        # Cancel variable/proactive timer — user is active
         old_vt = self._variable_timers.pop(message.channel.id, None)
         if old_vt is not None and not old_vt.done():
             old_vt.cancel()
