@@ -546,7 +546,10 @@ class DiscordBot:
             channel_id=channel_id,
             pending_messages=[],
         )
-        timer_note = f"[system: your set_timer for {seconds}s has expired]"
+        timer_note = (
+            f"[system: your set_timer for {seconds}s has expired]\n"
+            "你可以选择对用户说话、保持沉默，或再次使用 set_timer 设置一个新的计时器。"
+        )
         if transcript:
             transcript = f"{transcript}\n{timer_note}"
         else:
@@ -560,8 +563,8 @@ class DiscordBot:
             self.logger.error("UNKNOWN", "variable timer api request failed", exc=exc)
             return
 
-        reply = response.text
-        if reply:
+        reply = (response.text or "").strip()
+        if reply and "[SILENT]" not in reply:
             try:
                 await self._reply_by_sentence(None, reply, channel=channel)
                 self.history_store.append_entry(
