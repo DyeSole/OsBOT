@@ -628,19 +628,11 @@ class DiscordBot:
             if not alarm_list:
                 self._alarms.pop(channel_id, None)
 
-        transcript = self.context_builder.build_context_for_api(
-            channel_id=channel_id,
-            pending_messages=[],
-        )
-        timer_note = (
+        transcript = (
             f"[system: your set_timer for {seconds}s has expired]\n"
             f"你之前答应提醒用户：{reason}\n"
             "请现在提醒用户这件事，不可以沉默。保持你一贯的说话风格和人格。"
         )
-        if transcript:
-            transcript = f"{transcript}\n{timer_note}"
-        else:
-            transcript = timer_note
 
         messages = [{"role": "user", "content": transcript}]
         try:
