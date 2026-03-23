@@ -472,6 +472,65 @@ class DiscordBot:
             except Exception:
                 await pending.channel.send("我刚刚有点卡住了，等我一下再试试。")
 
+    async def _reply_immediate(self, message: discord.Message, text: str) -> None:
+        """Skip typing-wait; build context and call API right away."""
+        channel_id = message.channel.id
+        user_label = self._user_label(message.author)
+        now_clock = self._now_clock()
+
+        pending_entry = {
+            "role": "user",
+            "username": user_label,
+            "time": now_clock,
+            "content": text,
+        }
+        transcript = self.context_builder.build_context_for_api(
+            channel_id=channel_id,
+            pending_messages=[pending_entry],
+        )
+        if not transcript:
+            self.logger.error("LOGIC", "empty transcript, skip api request")
+            return
+        self.history_store.append_entry(
+            channel_id=channel_id,
+            role="user",
+            username=user_label,
+            time=now_clock,
+            content=text,
+        )
+        if self.settings.show_api_payload:
+            self.logger.info(f"📨 api_payload\n{transcript}")
+        messages = [{"role": "user", "content": transcript}]
+        text_one_line = text.replace("\n", "\\n")
+        self.logger.info(f"✅ api_request_sent (immediate) includes={text_one_line}")
+
+        try:
+            await message.channel.trigger_typing()
+            response = await self._stream_and_send(
+                message, message.channel, messages,
+            )
+            reply = (response.text or "").strip()
+            if reply:
+                self.history_store.append_entry(
+                    channel_id=channel_id,
+                    role="assistant",
+                    username=self.settings.bot_key,
+                    time=self._now_clock(),
+                    content=reply,
+                )
+            self._handle_tool_calls(response, channel_id, message.channel)
+            self._schedule_proactive(channel_id, message.channel)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("UNKNOWN", "failed to send reply", exc=exc)
+            try:
+                await message.reply(
+                    "我刚刚有点卡住了，等我一下再试试。",
+                    mention_author=False,
+                    allowed_mentions=AllowedMentions.none(),
+                )
+            except Exception:
+                await message.channel.send("我刚刚有点卡住了，等我一下再试试。")
+
     def _handle_tool_calls(self, response, channel_id: int, channel: discord.abc.Messageable) -> None:
         """Process tool calls returned by the LLM."""
         for tc in response.tool_calls:
@@ -829,13 +888,17 @@ class DiscordBot:
             task, _ = old_vt
             if not task.done():
                 task.cancel()
-        self._touch_pending_message(
-            message=message,
-            channel_id=message.channel.id,
-            user_id=message.author.id,
-            user_label=self._user_label(message.author),
-            text=text,
-        )
+
+        if self.settings.typing_wait:
+            self._touch_pending_message(
+                message=message,
+                channel_id=message.channel.id,
+                user_id=message.author.id,
+                user_label=self._user_label(message.author),
+                text=text,
+            )
+        else:
+            asyncio.create_task(self._reply_immediate(message, text))
 
     def run_forever(self) -> None:
         if not self.settings.discord_bot_token:

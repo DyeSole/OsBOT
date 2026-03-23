@@ -198,11 +198,25 @@ class ToolboxView(discord.ui.View):
     def __init__(self, bot: DiscordBot):
         super().__init__(timeout=300)
         self.bot = bot
+        # Split mode toggle
         is_novel = bot.settings.split_mode == "novel"
-        label = "小说模式 ✓" if is_novel else "聊天模式 ✓"
-        self.split_btn = discord.ui.Button(label=label, style=discord.ButtonStyle.success if is_novel else discord.ButtonStyle.primary)
+        split_label = "小说模式 ✓" if is_novel else "聊天模式 ✓"
+        self.split_btn = discord.ui.Button(
+            label=split_label,
+            style=discord.ButtonStyle.success if is_novel else discord.ButtonStyle.primary,
+        )
         self.split_btn.callback = self._toggle_split_mode
         self.add_item(self.split_btn)
+
+        # Typing wait toggle
+        tw = bot.settings.typing_wait
+        tw_label = "等待输入 ✓" if tw else "即时回复 ✓"
+        self.tw_btn = discord.ui.Button(
+            label=tw_label,
+            style=discord.ButtonStyle.primary if tw else discord.ButtonStyle.success,
+        )
+        self.tw_btn.callback = self._toggle_typing_wait
+        self.add_item(self.tw_btn)
 
     async def _toggle_split_mode(self, interaction: discord.Interaction) -> None:
         current = self.bot.settings.split_mode
@@ -210,6 +224,16 @@ class ToolboxView(discord.ui.View):
         update_env_values({"SPLIT_MODE": new_mode})
         await self.bot.reload_settings_if_needed()
         label = "小说模式" if new_mode == "novel" else "聊天模式"
+        await interaction.response.edit_message(
+            content=f"工具箱\n\n已切换为{label}",
+            view=ToolboxView(self.bot),
+        )
+
+    async def _toggle_typing_wait(self, interaction: discord.Interaction) -> None:
+        new_val = not self.bot.settings.typing_wait
+        update_env_values({"TYPING_WAIT": "1" if new_val else "0"})
+        await self.bot.reload_settings_if_needed()
+        label = "等待输入" if new_val else "即时回复"
         await interaction.response.edit_message(
             content=f"工具箱\n\n已切换为{label}",
             view=ToolboxView(self.bot),

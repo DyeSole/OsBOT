@@ -25,6 +25,7 @@ class Settings:
     typing_detect_delay_seconds: float = 1.0
     reset_timer_seconds: float = 2.5
     proactive_idle_seconds: float = 300.0
+    typing_wait: bool = True   # True = wait for typing idle, False = reply immediately
     split_mode: str = "chat"  # "chat" = split by newline, "novel" = no split
     quiet_enabled: bool = False
     quiet_start: str = ""   # e.g. "23:00"
@@ -78,6 +79,7 @@ def load_settings() -> Settings:
     )
     reset_timer_seconds = float(_env_value("RESET_TIMER_SECONDS", env_file, "2.5").strip() or "2.5")
     proactive_idle_seconds = float(_env_value("PROACTIVE_IDLE_SECONDS", env_file, "300.0").strip() or "300.0")
+    typing_wait = _env_bool("TYPING_WAIT", env_file, True)
     split_mode = _env_value("SPLIT_MODE", env_file, "chat").strip().lower() or "chat"
     if split_mode not in ("chat", "novel"):
         split_mode = "chat"
@@ -99,6 +101,7 @@ def load_settings() -> Settings:
         typing_detect_delay_seconds=max(0.0, typing_detect_delay_seconds),
         reset_timer_seconds=max(0.1, reset_timer_seconds),
         proactive_idle_seconds=max(0.0, proactive_idle_seconds),
+        typing_wait=typing_wait,
         split_mode=split_mode,
         quiet_enabled=quiet_enabled,
         quiet_start=quiet_start,
@@ -126,6 +129,7 @@ def summarize_settings(settings: Settings) -> dict[str, Any]:
         "TYPING_DETECT_DELAY_SECONDS": settings.typing_detect_delay_seconds,
         "RESET_TIMER_SECONDS": settings.reset_timer_seconds,
         "PROACTIVE_IDLE_SECONDS": settings.proactive_idle_seconds,
+        "TYPING_WAIT": settings.typing_wait,
         "SPLIT_MODE": settings.split_mode,
         "QUIET_ENABLED": settings.quiet_enabled,
         "QUIET_START": settings.quiet_start,
