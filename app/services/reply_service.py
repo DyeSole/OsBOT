@@ -24,7 +24,7 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "seconds": {
                     "type": "number",
-                    "description": "计时器时长（秒）",
+                    "description": "计时器时长（秒）。没有 reason 时范围为 120~7200（2分钟~2小时），有 reason 时不限。",
                 },
                 "reason": {
                     "type": "string",

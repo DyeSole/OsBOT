@@ -529,7 +529,8 @@ class DiscordBot:
                     if reason:
                         self._schedule_alarm(channel_id, channel, seconds, reason)
                     else:
-                        self._schedule_variable_timer(channel_id, channel, seconds)
+                        clamped = max(120, min(seconds, 7200))
+                        self._schedule_variable_timer(channel_id, channel, clamped)
                     self.logger.info(f"⏰ timer_set channel={channel_id} seconds={seconds} reason={reason}")
 
     def _schedule_variable_timer(
