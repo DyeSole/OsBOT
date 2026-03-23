@@ -177,6 +177,7 @@ class DiscordBot:
         self._last_message_ts: dict[tuple[int, int], float] = {}
         self._typing_watchdog_task: asyncio.Task | None = None
         self._variable_timers: dict[int, asyncio.Task] = {}
+        self._alarms: dict[int, list[asyncio.Task]] = {}  # per-channel, multiple allowed
 
         intents = discord.Intents.default()
         intents.message_content = True
@@ -525,15 +526,17 @@ class DiscordBot:
                 seconds = tc.input.get("seconds", 0)
                 reason = tc.input.get("reason") or None
                 if isinstance(seconds, (int, float)) and seconds > 0:
-                    self._schedule_variable_timer(channel_id, channel, seconds, reason)
-                    self.logger.info(f"⏰ variable_timer_set channel={channel_id} seconds={seconds} reason={reason}")
+                    if reason:
+                        self._schedule_alarm(channel_id, channel, seconds, reason)
+                    else:
+                        self._schedule_variable_timer(channel_id, channel, seconds)
+                    self.logger.info(f"⏰ timer_set channel={channel_id} seconds={seconds} reason={reason}")
 
     def _schedule_variable_timer(
         self,
         channel_id: int,
         channel: discord.abc.Messageable,
         seconds: float,
-        reason: str | None = None,
     ) -> None:
         """Schedule a variable timer. When it fires, send context to AI and let it speak."""
         # Cancel any existing variable timer for this channel
@@ -541,15 +544,27 @@ class DiscordBot:
         if old_task is not None and not old_task.done():
             old_task.cancel()
         self._variable_timers[channel_id] = asyncio.create_task(
-            self._variable_timer_fire(channel_id, channel, seconds, reason)
+            self._variable_timer_fire(channel_id, channel, seconds)
         )
+
+    def _schedule_alarm(
+        self,
+        channel_id: int,
+        channel: discord.abc.Messageable,
+        seconds: float,
+        reason: str,
+    ) -> None:
+        """Schedule an alarm. Multiple alarms per channel; not cancelled by user messages."""
+        task = asyncio.create_task(
+            self._alarm_fire(channel_id, channel, seconds, reason)
+        )
+        self._alarms.setdefault(channel_id, []).append(task)
 
     async def _variable_timer_fire(
         self,
         channel_id: int,
         channel: discord.abc.Messageable,
         seconds: float,
-        reason: str | None = None,
     ) -> None:
         """Wait for the specified duration, then send context to AI."""
         await asyncio.sleep(seconds)
@@ -559,15 +574,8 @@ class DiscordBot:
             channel_id=channel_id,
             pending_messages=[],
         )
-        if reason:
-            timer_note = (
-                f"[system: your set_timer for {seconds}s has expired]\n"
-                f"你之前答应提醒用户：{reason}\n"
-                "请现在提醒用户这件事，不可以沉默。保持你一贯的说话风格和人格。"
-            )
-        else:
-            proactive_prompt = _load_proactive_prompt()
-            timer_note = f"[system: your set_timer for {seconds}s has expired]\n{proactive_prompt}"
+        proactive_prompt = _load_proactive_prompt()
+        timer_note = f"[system: your set_timer for {seconds}s has expired]\n{proactive_prompt}"
         if transcript:
             transcript = f"{transcript}\n{timer_note}"
         else:
@@ -582,8 +590,7 @@ class DiscordBot:
             return
 
         reply = (response.text or "").strip()
-        is_alarm = reason is not None
-        if is_alarm or (reply and "[SILENT]" not in reply):
+        if reply and "[SILENT]" not in reply:
             try:
                 await self._reply_by_sentence(None, reply, channel=channel)
                 self.history_store.append_entry(
@@ -600,6 +607,65 @@ class DiscordBot:
         # Handle any new tool calls (e.g. AI sets another timer)
         self._handle_tool_calls(response, channel_id, channel)
         # Restart 5min timer after variable timer fires
+        self._schedule_proactive(channel_id, channel)
+
+    async def _alarm_fire(
+        self,
+        channel_id: int,
+        channel: discord.abc.Messageable,
+        seconds: float,
+        reason: str,
+    ) -> None:
+        """Wait for the specified duration, then remind the user. Cannot be silent."""
+        task = asyncio.current_task()
+        try:
+            await asyncio.sleep(seconds)
+        finally:
+            # Remove ourselves from the alarm list
+            alarm_list = self._alarms.get(channel_id, [])
+            if task in alarm_list:
+                alarm_list.remove(task)
+            if not alarm_list:
+                self._alarms.pop(channel_id, None)
+
+        transcript = self.context_builder.build_context_for_api(
+            channel_id=channel_id,
+            pending_messages=[],
+        )
+        timer_note = (
+            f"[system: your set_timer for {seconds}s has expired]\n"
+            f"你之前答应提醒用户：{reason}\n"
+            "请现在提醒用户这件事，不可以沉默。保持你一贯的说话风格和人格。"
+        )
+        if transcript:
+            transcript = f"{transcript}\n{timer_note}"
+        else:
+            transcript = timer_note
+
+        messages = [{"role": "user", "content": transcript}]
+        try:
+            async with channel.typing():
+                response = await asyncio.to_thread(self.reply_service.generate_reply_with_tools, messages)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("UNKNOWN", "alarm api request failed", exc=exc)
+            return
+
+        reply = (response.text or "").strip()
+        if reply:
+            try:
+                await self._reply_by_sentence(None, reply, channel=channel)
+                self.history_store.append_entry(
+                    channel_id=channel_id,
+                    role="assistant",
+                    username=self.settings.bot_key,
+                    time=self._now_clock(),
+                    content=reply,
+                )
+                self.logger.info(f"⏰ alarm_sent channel={channel_id} reason={reason}")
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("UNKNOWN", "failed to send alarm message", exc=exc)
+
+        self._handle_tool_calls(response, channel_id, channel)
         self._schedule_proactive(channel_id, channel)
 
     def _schedule_proactive(self, channel_id: int, channel: discord.abc.Messageable) -> None:
