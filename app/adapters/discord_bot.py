@@ -4,7 +4,7 @@ import asyncio
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time as dt_time
 
 import discord
 from discord import AllowedMentions, app_commands
@@ -96,6 +96,48 @@ class PromptEditModal(discord.ui.Modal):
         )
 
 
+class QuietHoursModal(discord.ui.Modal, title="静默时间设置"):
+    def __init__(self, bot: "DiscordBot"):
+        super().__init__()
+        self.bot = bot
+        env_values = read_env_values()
+        current = bot.settings
+        self.enabled = discord.ui.TextInput(
+            label="开关（1=开启 0=关闭）",
+            default=env_values.get("QUIET_ENABLED", "1" if current.quiet_enabled else "0"),
+            required=True,
+            max_length=1,
+        )
+        self.start_time = discord.ui.TextInput(
+            label="开始时间（如 23:00）",
+            default=env_values.get("QUIET_START", current.quiet_start),
+            required=True,
+            max_length=5,
+        )
+        self.end_time = discord.ui.TextInput(
+            label="结束时间（如 07:00）",
+            default=env_values.get("QUIET_END", current.quiet_end),
+            required=True,
+            max_length=5,
+        )
+        self.add_item(self.enabled)
+        self.add_item(self.start_time)
+        self.add_item(self.end_time)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        update_env_values(
+            {
+                "QUIET_ENABLED": self.enabled.value.strip(),
+                "QUIET_START": self.start_time.value.strip(),
+                "QUIET_END": self.end_time.value.strip(),
+            }
+        )
+        await interaction.response.edit_message(
+            content="工具箱\n\n静默时间配置已写入 .env，文件监听会自动生效。",
+            view=ToolboxView(self.bot),
+        )
+
+
 class PromptToolboxView(discord.ui.View):
     def __init__(self, bot: "DiscordBot"):
         super().__init__(timeout=300)
@@ -129,6 +171,10 @@ class ToolboxView(discord.ui.View):
     @discord.ui.button(label="API配置", style=discord.ButtonStyle.primary)
     async def api_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(ApiConfigModal(self.bot))
+
+    @discord.ui.button(label="静默时间", style=discord.ButtonStyle.secondary)
+    async def quiet_hours(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(QuietHoursModal(self.bot))
 
     @discord.ui.button(label="提示词", style=discord.ButtonStyle.secondary)
     async def prompts(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -174,6 +220,9 @@ class DiscordBot:
         self._variable_timers: dict[int, tuple[asyncio.Task, float]] = {}  # (task, deadline)
         self._alarms: dict[int, list[asyncio.Task]] = {}  # per-channel, multiple allowed
         self._pending_alarm_reasons: dict[int, list[str]] = {}  # buffered for next timer fire
+        self._quiet_buffered_reasons: dict[int, list[str]] = {}  # buffered during quiet hours
+        self._quiet_channels: dict[int, discord.abc.Messageable] = {}  # channel refs for flush
+        self._quiet_flush_task: asyncio.Task | None = None
 
         intents = discord.Intents.default()
         intents.message_content = True
@@ -570,6 +619,11 @@ class DiscordBot:
         await asyncio.sleep(seconds)
         self._variable_timers.pop(channel_id, None)
 
+        # During quiet hours, discard proactive/variable timer fires silently
+        if self._is_quiet_time():
+            self.logger.info(f"🤫 variable_timer_discarded_quiet channel={channel_id} seconds={seconds}")
+            return
+
         transcript = self.context_builder.build_context_for_api(
             channel_id=channel_id,
             pending_messages=[],
@@ -637,6 +691,14 @@ class DiscordBot:
             if not alarm_list:
                 self._alarms.pop(channel_id, None)
 
+        # During quiet hours, buffer alarm for flush at quiet end
+        if self._is_quiet_time():
+            self._quiet_buffered_reasons.setdefault(channel_id, []).append(reason)
+            self._quiet_channels[channel_id] = channel
+            self._schedule_quiet_flush()
+            self.logger.info(f"🤫 alarm_buffered_quiet channel={channel_id} reason={reason}")
+            return
+
         # If a variable/proactive timer is about to fire soon, buffer this alarm
         vt = self._variable_timers.get(channel_id)
         if vt is not None:
@@ -686,6 +748,104 @@ class DiscordBot:
         if self.proactive_idle_seconds <= 0:
             return
         self._schedule_variable_timer(channel_id, channel, self.proactive_idle_seconds)
+
+    @staticmethod
+    def _parse_time(s: str) -> dt_time | None:
+        """Parse 'HH:MM' into a time object, or None on failure."""
+        s = s.strip()
+        if not s:
+            return None
+        try:
+            parts = s.split(":")
+            return dt_time(int(parts[0]), int(parts[1]))
+        except (ValueError, IndexError):
+            return None
+
+    def _is_quiet_time(self) -> bool:
+        """Return True if quiet hours are active right now."""
+        if not self.settings.quiet_enabled:
+            return False
+        start = self._parse_time(self.settings.quiet_start)
+        end = self._parse_time(self.settings.quiet_end)
+        if start is None or end is None:
+            return False
+        now = datetime.now().time()
+        if start <= end:
+            return start <= now < end
+        # Crosses midnight, e.g. 23:00 -> 07:00
+        return now >= start or now < end
+
+    def _seconds_until_quiet_end(self) -> float:
+        """Return seconds until quiet_end. Assumes we are currently in quiet time."""
+        end = self._parse_time(self.settings.quiet_end)
+        if end is None:
+            return 0.0
+        now = datetime.now()
+        end_today = now.replace(hour=end.hour, minute=end.minute, second=0, microsecond=0)
+        if end_today <= now:
+            # End is tomorrow
+            from datetime import timedelta
+            end_today += timedelta(days=1)
+        return (end_today - now).total_seconds()
+
+    def _schedule_quiet_flush(self) -> None:
+        """Ensure a flush task is scheduled for when quiet hours end."""
+        if self._quiet_flush_task is not None and not self._quiet_flush_task.done():
+            return  # already scheduled
+        wait = self._seconds_until_quiet_end()
+        if wait <= 0:
+            return
+        self._quiet_flush_task = asyncio.create_task(self._quiet_flush_fire(wait))
+
+    async def _quiet_flush_fire(self, wait_seconds: float) -> None:
+        """Sleep until quiet hours end, then send one API request per channel with all buffered alarms."""
+        await asyncio.sleep(wait_seconds)
+        # Drain all buffered quiet-hour alarms
+        buffered = dict(self._quiet_buffered_reasons)
+        channels = dict(self._quiet_channels)
+        self._quiet_buffered_reasons.clear()
+        self._quiet_channels.clear()
+
+        for channel_id, reasons in buffered.items():
+            if not reasons:
+                continue
+            channel = channels.get(channel_id)
+            if channel is None:
+                continue
+
+            recent = self.history_store.load_all_entries(channel_id=channel_id)[-10:]
+            history_block = self.history_store.render_entries(recent) if recent else ""
+            alarm_lines = "\n".join(f"- {r}" for r in reasons)
+            alarm_note = (
+                "[system: 静默时间已结束，以下闹钟在静默期间到期，你必须提醒用户这些事情，不可以沉默]\n"
+                f"{alarm_lines}"
+            )
+            transcript = f"{history_block}\n{alarm_note}".strip()
+
+            messages = [{"role": "user", "content": transcript}]
+            try:
+                async with channel.typing():
+                    response = await asyncio.to_thread(self.reply_service.generate_reply_with_tools, messages)
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("UNKNOWN", "quiet flush api request failed", exc=exc)
+                continue
+
+            reply = (response.text or "").strip()
+            if reply:
+                try:
+                    await self._reply_by_sentence(None, reply, channel=channel)
+                    self.history_store.append_entry(
+                        channel_id=channel_id,
+                        role="assistant",
+                        username=self.settings.bot_key,
+                        time=self._now_clock(),
+                        content=reply,
+                    )
+                    self.logger.info(f"🔔 quiet_flush_sent channel={channel_id} alarms={len(reasons)}")
+                except Exception as exc:  # noqa: BLE001
+                    self.logger.error("UNKNOWN", "failed to send quiet flush message", exc=exc)
+
+            self._handle_tool_calls(response, channel_id, channel)
 
     async def _typing_watchdog(self) -> None:
         while True:

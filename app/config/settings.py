@@ -25,6 +25,9 @@ class Settings:
     typing_detect_delay_seconds: float = 1.0
     reset_timer_seconds: float = 2.5
     proactive_idle_seconds: float = 300.0
+    quiet_enabled: bool = False
+    quiet_start: str = ""   # e.g. "23:00"
+    quiet_end: str = ""     # e.g. "07:00"
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -74,6 +77,9 @@ def load_settings() -> Settings:
     )
     reset_timer_seconds = float(_env_value("RESET_TIMER_SECONDS", env_file, "2.5").strip() or "2.5")
     proactive_idle_seconds = float(_env_value("PROACTIVE_IDLE_SECONDS", env_file, "300.0").strip() or "300.0")
+    quiet_enabled = _env_bool("QUIET_ENABLED", env_file, False)
+    quiet_start = _env_value("QUIET_START", env_file, "").strip()
+    quiet_end = _env_value("QUIET_END", env_file, "").strip()
 
     return Settings(
         bot_key=bot_key,
@@ -89,6 +95,9 @@ def load_settings() -> Settings:
         typing_detect_delay_seconds=max(0.0, typing_detect_delay_seconds),
         reset_timer_seconds=max(0.1, reset_timer_seconds),
         proactive_idle_seconds=max(0.0, proactive_idle_seconds),
+        quiet_enabled=quiet_enabled,
+        quiet_start=quiet_start,
+        quiet_end=quiet_end,
     )
 
 
@@ -112,6 +121,9 @@ def summarize_settings(settings: Settings) -> dict[str, Any]:
         "TYPING_DETECT_DELAY_SECONDS": settings.typing_detect_delay_seconds,
         "RESET_TIMER_SECONDS": settings.reset_timer_seconds,
         "PROACTIVE_IDLE_SECONDS": settings.proactive_idle_seconds,
+        "QUIET_ENABLED": settings.quiet_enabled,
+        "QUIET_START": settings.quiet_start,
+        "QUIET_END": settings.quiet_end,
         "API_KEY_SET": bool(settings.api_key),
         "DISCORD_BOT_TOKEN_SET": bool(settings.discord_bot_token),
     }
