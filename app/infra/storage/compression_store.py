@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from app.core.clock import now as _now
 from pathlib import Path
 from typing import Any
+
+from app.core.clock import now as _now
 
 
 class CompressionStore:

@@ -7,14 +7,13 @@ Reads the ``TZ`` environment variable (e.g. ``Asia/Shanghai``) so that
 from __future__ import annotations
 
 import os
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, tzinfo
 
-_tz = None
+_tz: tzinfo | None = None
 _tz_loaded = False
 
 
-def _load_tz() -> Optional[timezone]:
+def _load_tz() -> tzinfo | None:
     global _tz, _tz_loaded
     if _tz_loaded:
         return _tz

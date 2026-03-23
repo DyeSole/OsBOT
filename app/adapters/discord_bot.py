@@ -69,7 +69,6 @@ class DiscordBot:
         self._pending_alarm_reasons: dict[int, list[str]] = {}  # buffered for next timer fire
         self._pending_reactions: dict[int, list[str]] = {}  # buffered reactions for next timer fire
         self._typing_nudge_channels: set[int] = set()  # channels with a pending typing-nudge timer
-        self._last_bot_msgs: dict[int, list[discord.Message]] = {}  # last bot reply messages per channel
         self._quiet_buffered_reasons: dict[int, list[str]] = {}  # buffered during quiet hours
         self._quiet_channels: dict[int, discord.abc.Messageable] = {}  # channel refs for flush
         self._quiet_flush_task: asyncio.Task | None = None
@@ -467,9 +466,8 @@ class DiscordBot:
 
         try:
             await pending.channel.typing()
-            sent: list[discord.Message] = []
             response = await self._stream_and_send(
-                pending.anchor_message, pending.channel, messages, sent=sent,
+                pending.anchor_message, pending.channel, messages,
             )
             reply = (response.text or "").strip()
             if reply:
@@ -480,8 +478,6 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-            if sent:
-                self._last_bot_msgs[channel_id] = sent
             self._log_typing(
                 f"🚀 api_sent user={pending.user_label} chunks={len(pending.chunks)} merged_len={len(merged_text)}"
             )
@@ -535,9 +531,8 @@ class DiscordBot:
 
         try:
             await message.channel.typing()
-            sent: list[discord.Message] = []
             response = await self._stream_and_send(
-                message, message.channel, messages, sent=sent,
+                message, message.channel, messages,
             )
             reply = (response.text or "").strip()
             if reply:
@@ -548,8 +543,6 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-            if sent:
-                self._last_bot_msgs[channel_id] = sent
             self._handle_tool_calls(response, channel_id, message.channel)
             self._schedule_proactive(channel_id, message.channel)
         except Exception as exc:  # noqa: BLE001
@@ -976,10 +969,9 @@ class DiscordBot:
             return
         messages = [{"role": "user", "content": transcript}]
         try:
-            sent: list[discord.Message] = []
             async with channel.typing():
                 response = await self._stream_and_send(
-                    None, channel, messages, sent=sent,
+                    None, channel, messages,
                 )
             reply = (response.text or "").strip()
             if reply:
@@ -990,8 +982,6 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-            if sent:
-                self._last_bot_msgs[channel_id] = sent
             self._handle_tool_calls(response, channel_id, channel)
             self._schedule_proactive(channel_id, channel)
         except Exception as exc:  # noqa: BLE001
