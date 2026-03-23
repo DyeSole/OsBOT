@@ -479,7 +479,7 @@ class DiscordBot:
                         self._schedule_alarm(channel_id, channel, seconds, reason)
                     else:
                         self._schedule_variable_timer(channel_id, channel, seconds, source="llm")
-                    self._log_typing(f"🤖 timer_set ch={channel_id} s={seconds} reason={reason}")
+                    pass  # timer_start already logged by _schedule_variable_timer / _schedule_alarm
 
     def _schedule_variable_timer(
         self,
@@ -575,7 +575,7 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-                self._log_typing(f"⏰ timer_sent ch={channel_id}")
+                self._log_typing(f"⏰ timer_sent ch={channel_id} reply={reply}")
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send variable timer message", exc=exc)
 
@@ -649,7 +649,7 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-                self._log_typing(f"⏰ alarm_sent ch={channel_id} reason={reason}")
+                self._log_typing(f"⏰ alarm_sent ch={channel_id} reason={reason} reply={reply}")
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send alarm message", exc=exc)
 
