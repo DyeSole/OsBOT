@@ -976,7 +976,9 @@ class DiscordBot:
                 )
                 return
 
-        # 占位：表情处理逻辑
+        # No timer or remaining >= proactive_idle_seconds: buffer + schedule 60s nudge
+        self._pending_reactions.setdefault(channel_id, []).append(reaction_text)
+        self._maybe_schedule_typing_nudge(channel_id, channel)
 
     async def on_message(self, message: discord.Message) -> None:
         await self.reload_settings_if_needed()
