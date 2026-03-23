@@ -144,6 +144,55 @@ class ChatHistoryStore:
             )
         return entries
 
+    def pop_last_by_role(self, *, channel_id: int, role: str) -> dict[str, str] | None:
+        """Remove and return the last entry with the given role. Returns None if not found."""
+        path = self._history_path(channel_id)
+        if not path.exists():
+            return None
+        lines = path.read_text(encoding="utf-8").splitlines()
+        target_idx = -1
+        target_entry: dict[str, str] | None = None
+        for i in range(len(lines) - 1, -1, -1):
+            raw = lines[i].strip()
+            if not raw:
+                continue
+            try:
+                row = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(row, dict) and row.get("role") == role:
+                target_idx = i
+                target_entry = row
+                break
+        if target_idx < 0:
+            return None
+        del lines[target_idx]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return target_entry
+
+    def replace_last_by_role(
+        self, *, channel_id: int, role: str, new_content: str,
+    ) -> bool:
+        """Replace the content of the last entry with the given role. Returns True on success."""
+        path = self._history_path(channel_id)
+        if not path.exists():
+            return False
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for i in range(len(lines) - 1, -1, -1):
+            raw = lines[i].strip()
+            if not raw:
+                continue
+            try:
+                row = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(row, dict) and row.get("role") == role:
+                row["content"] = new_content
+                lines[i] = json.dumps(row, ensure_ascii=False)
+                path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                return True
+        return False
+
     def delete_channel(self, channel_id: int) -> bool:
         """Delete history file for a channel. Returns True if a file was removed."""
         path = self._history_path(channel_id)

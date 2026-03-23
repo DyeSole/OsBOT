@@ -69,6 +69,7 @@ class DiscordBot:
         self._pending_alarm_reasons: dict[int, list[str]] = {}  # buffered for next timer fire
         self._pending_reactions: dict[int, list[str]] = {}  # buffered reactions for next timer fire
         self._typing_nudge_channels: set[int] = set()  # channels with a pending typing-nudge timer
+        self._last_bot_msgs: dict[int, list[discord.Message]] = {}  # last bot reply messages per channel
         self._quiet_buffered_reasons: dict[int, list[str]] = {}  # buffered during quiet hours
         self._quiet_channels: dict[int, discord.abc.Messageable] = {}  # channel refs for flush
         self._quiet_flush_task: asyncio.Task | None = None
@@ -83,6 +84,7 @@ class DiscordBot:
 
         self.client.event(self.on_ready)
         self.client.event(self.on_message)
+        self.client.event(self.on_message_edit)
         self.client.event(self.on_typing)
         self.client.event(self.on_raw_reaction_add)
         self.client.event(self.on_guild_channel_delete)
@@ -214,6 +216,7 @@ class DiscordBot:
         reply: str,
         *,
         channel: discord.abc.Messageable | None = None,
+        sent: list[discord.Message] | None = None,
     ) -> None:
         do_split = self.settings.split_mode == "chat"
         sentences = self._split_sentences(reply, split=do_split)
@@ -224,16 +227,18 @@ class DiscordBot:
             return
         for idx, sentence in enumerate(sentences):
             if idx == 0 and anchor_message is not None:
-                await anchor_message.reply(
+                msg = await anchor_message.reply(
                     sentence,
                     mention_author=False,
                     allowed_mentions=AllowedMentions.none(),
                 )
             else:
-                await target_channel.send(
+                msg = await target_channel.send(
                     sentence,
                     allowed_mentions=AllowedMentions.none(),
                 )
+            if sent is not None:
+                sent.append(msg)
             if idx < len(sentences) - 1:
                 await asyncio.sleep(0.8)
 
@@ -244,6 +249,7 @@ class DiscordBot:
         messages: list[dict[str, str]],
         *,
         include_tools: bool = False,
+        sent: list[discord.Message] | None = None,
     ) -> LLMResponse:
         """Stream LLM response, sending each sentence to Discord as it completes."""
         from app.infra.llm_client import LLMResponse
@@ -284,14 +290,16 @@ class DiscordBot:
                                 async with channel.typing():
                                     await asyncio.sleep(delay)
                             if is_first and anchor_message is not None:
-                                await anchor_message.reply(
+                                msg = await anchor_message.reply(
                                     s, mention_author=False,
                                     allowed_mentions=AllowedMentions.none(),
                                 )
                             else:
-                                await channel.send(
+                                msg = await channel.send(
                                     s, allowed_mentions=AllowedMentions.none(),
                                 )
+                            if sent is not None:
+                                sent.append(msg)
                             is_first = False
                         buffer = parts[-1]
             elif kind == "done":
@@ -300,14 +308,16 @@ class DiscordBot:
                         async with channel.typing():
                             await asyncio.sleep(self.settings.chat_reply_delay_seconds)
                     if is_first and anchor_message is not None:
-                        await anchor_message.reply(
+                        msg = await anchor_message.reply(
                             buffer.strip(), mention_author=False,
                             allowed_mentions=AllowedMentions.none(),
                         )
                     else:
-                        await channel.send(
+                        msg = await channel.send(
                             buffer.strip(), allowed_mentions=AllowedMentions.none(),
                         )
+                    if sent is not None:
+                        sent.append(msg)
                 return value  # type: ignore[return-value]
             elif kind == "error":
                 raise value  # type: ignore[misc]
@@ -457,8 +467,9 @@ class DiscordBot:
 
         try:
             await pending.channel.typing()
+            sent: list[discord.Message] = []
             response = await self._stream_and_send(
-                pending.anchor_message, pending.channel, messages,
+                pending.anchor_message, pending.channel, messages, sent=sent,
             )
             reply = (response.text or "").strip()
             if reply:
@@ -469,6 +480,8 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
+            if sent:
+                self._last_bot_msgs[channel_id] = sent
             self._log_typing(
                 f"🚀 api_sent user={pending.user_label} chunks={len(pending.chunks)} merged_len={len(merged_text)}"
             )
@@ -522,8 +535,9 @@ class DiscordBot:
 
         try:
             await message.channel.typing()
+            sent: list[discord.Message] = []
             response = await self._stream_and_send(
-                message, message.channel, messages,
+                message, message.channel, messages, sent=sent,
             )
             reply = (response.text or "").strip()
             if reply:
@@ -534,6 +548,8 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
+            if sent:
+                self._last_bot_msgs[channel_id] = sent
             self._handle_tool_calls(response, channel_id, message.channel)
             self._schedule_proactive(channel_id, message.channel)
         except Exception as exc:  # noqa: BLE001
@@ -909,6 +925,84 @@ class DiscordBot:
             if h or m:
                 self.logger.info(f"🧹 cleaned_orphan channel_id={cid} history={h} memory={m}")
 
+    async def _delete_bot_reply(self, channel_id: int) -> None:
+        """Delete the last bot reply from both Discord and DB."""
+        # Delete Discord messages
+        msgs = self._last_bot_msgs.pop(channel_id, [])
+        for msg in msgs:
+            try:
+                await msg.delete()
+            except Exception:  # noqa: BLE001
+                pass
+        # Delete last assistant entry from DB
+        self.history_store.pop_last_by_role(channel_id=channel_id, role="assistant")
+
+    async def _regenerate_reply(
+        self,
+        channel_id: int,
+        channel: discord.abc.Messageable,
+    ) -> None:
+        """Re-generate a bot reply from the current history state."""
+        transcript = self.context_builder.build_context_for_api(
+            channel_id=channel_id,
+            pending_messages=[],
+        )
+        if not transcript:
+            return
+        messages = [{"role": "user", "content": transcript}]
+        try:
+            sent: list[discord.Message] = []
+            async with channel.typing():
+                response = await self._stream_and_send(
+                    None, channel, messages, sent=sent,
+                )
+            reply = (response.text or "").strip()
+            if reply:
+                self.history_store.append_entry(
+                    channel_id=channel_id,
+                    role="assistant",
+                    username=self.settings.bot_key,
+                    time=self._now_clock(),
+                    content=reply,
+                )
+            if sent:
+                self._last_bot_msgs[channel_id] = sent
+            self._handle_tool_calls(response, channel_id, channel)
+            self._schedule_proactive(channel_id, channel)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("UNKNOWN", "regenerate reply failed", exc=exc)
+
+    async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
+        if after.author.bot:
+            return
+        new_text = (after.content or "").strip()
+        if not new_text:
+            return
+        channel_id = after.channel.id
+        entries = self.history_store.load_all_entries(channel_id=channel_id)
+        if not entries:
+            return
+        # Check the last entry is from the bot (i.e. there's a reply to regenerate)
+        if entries[-1].get("role") != "assistant":
+            return
+        # Find the last user entry and verify it matches the edited message
+        old_text = (before.content or "").strip()
+        for e in reversed(entries):
+            if e["role"] == "user":
+                # If before content is available, verify it matches
+                if old_text and e["content"] != old_text:
+                    return
+                break
+        else:
+            return  # no user entry found
+
+        # Update user's last message, delete bot reply, regenerate
+        self.history_store.replace_last_by_role(
+            channel_id=channel_id, role="user", new_content=new_text,
+        )
+        await self._delete_bot_reply(channel_id)
+        await self._regenerate_reply(channel_id, after.channel)
+
     async def on_ready(self) -> None:
         self.logger.startup_jar(cat_count=1)
         self.logger.info(f"bot is running as {self.client.user}")
@@ -957,6 +1051,14 @@ class DiscordBot:
             return
 
         emoji_str = str(payload.emoji)
+
+        # Reroll: user reacts with 🔄 on a bot message
+        if emoji_str == "\U0001f504" and message.author.id == self.client.user.id:  # type: ignore[union-attr]
+            channel_id = payload.channel_id
+            await self._delete_bot_reply(channel_id)
+            await self._regenerate_reply(channel_id, channel)  # type: ignore[arg-type]
+            return
+
         msg_preview = (message.content or "")[:60]
         if msg_preview:
             reaction_text = f"[对消息「{msg_preview}」的反应: {emoji_str}]"
