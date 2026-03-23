@@ -1,8 +1,21 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 import requests
+
+
+@dataclass
+class ToolCall:
+    name: str
+    input: dict[str, Any]
+
+
+@dataclass
+class LLMResponse:
+    text: str
+    tool_calls: list[ToolCall] = field(default_factory=list)
 
 
 class LLMClient:
@@ -38,7 +51,12 @@ class LLMClient:
             headers["anthropic-version"] = self.ANTHROPIC_VERSION
         return headers
 
-    def _payload(self, messages: list[dict[str, str]], system_prompt: str) -> dict[str, Any]:
+    def _payload(
+        self,
+        messages: list[dict[str, str]],
+        system_prompt: str,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         if self._is_anthropic_messages_api():
             payload: dict[str, Any] = {
                 "model": self.model,
@@ -47,12 +65,28 @@ class LLMClient:
             }
             if system_prompt:
                 payload["system"] = system_prompt
+            if tools:
+                payload["tools"] = tools
             return payload
 
-        return {
+        payload = {
             "model": self.model,
             "messages": ([{"role": "system", "content": system_prompt}] if system_prompt else []) + messages,
         }
+        if tools:
+            # OpenAI-compatible format
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t["name"],
+                        "description": t.get("description", ""),
+                        "parameters": t.get("input_schema", {}),
+                    },
+                }
+                for t in tools
+            ]
+        return payload
 
     @staticmethod
     def _extract_text_from_blocks(content: Any) -> str:
@@ -68,12 +102,47 @@ class LLMClient:
             return "\n".join(texts).strip()
         return ""
 
-    def _parse_response_text(self, data: dict[str, Any]) -> str:
+    @staticmethod
+    def _extract_tool_calls_anthropic(content: Any) -> list[ToolCall]:
+        if not isinstance(content, list):
+            return []
+        calls: list[ToolCall] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "tool_use":
+                calls.append(ToolCall(
+                    name=item.get("name", ""),
+                    input=item.get("input", {}),
+                ))
+        return calls
+
+    @staticmethod
+    def _extract_tool_calls_openai(message: dict[str, Any]) -> list[ToolCall]:
+        raw_calls = message.get("tool_calls") or []
+        calls: list[ToolCall] = []
+        for tc in raw_calls:
+            if not isinstance(tc, dict):
+                continue
+            func = tc.get("function") or {}
+            name = func.get("name", "")
+            args_raw = func.get("arguments", "{}")
+            import json
+            try:
+                args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            calls.append(ToolCall(name=name, input=args))
+        return calls
+
+    def _parse_response(self, data: dict[str, Any]) -> LLMResponse:
         if self._is_anthropic_messages_api():
-            text = self._extract_text_from_blocks(data.get("content"))
-            if text:
-                return text
-            raise RuntimeError("llm response missing content")
+            content = data.get("content")
+            text = self._extract_text_from_blocks(content)
+            tool_calls = self._extract_tool_calls_anthropic(content)
+            if not text and not tool_calls:
+                raise RuntimeError("llm response missing content")
+            return LLMResponse(text=text, tool_calls=tool_calls)
 
         choices = data.get("choices") or []
         if not choices:
@@ -81,12 +150,17 @@ class LLMClient:
 
         message = choices[0].get("message") or {}
         text = self._extract_text_from_blocks(message.get("content"))
-        if text:
-            return text
+        tool_calls = self._extract_tool_calls_openai(message)
+        if not text and not tool_calls:
+            raise RuntimeError("llm response missing message content")
+        return LLMResponse(text=text, tool_calls=tool_calls)
 
-        raise RuntimeError("llm response missing message content")
-
-    def generate(self, messages: list[dict[str, str]], system_prompt: str) -> str:
+    def _do_request(
+        self,
+        messages: list[dict[str, str]],
+        system_prompt: str,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         if not self.base_url:
             raise ValueError("missing BASE_URL")
         if not self.api_key:
@@ -95,12 +169,27 @@ class LLMClient:
         resp = requests.post(
             self._request_url(),
             headers=self._headers(),
-            json=self._payload(messages, system_prompt),
+            json=self._payload(messages, system_prompt, tools),
             timeout=45,
         )
         if resp.status_code >= 400:
             snippet = resp.text[:200].replace("\n", " ")
             raise RuntimeError(f"llm http {resp.status_code}: {snippet}")
 
-        data = resp.json()
-        return self._parse_response_text(data)
+        return resp.json()
+
+    def generate(self, messages: list[dict[str, str]], system_prompt: str) -> str:
+        """Backwards-compatible: returns text only."""
+        data = self._do_request(messages, system_prompt)
+        response = self._parse_response(data)
+        return response.text
+
+    def generate_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        system_prompt: str,
+        tools: list[dict[str, Any]],
+    ) -> LLMResponse:
+        """Returns structured response with text and tool calls."""
+        data = self._do_request(messages, system_prompt, tools)
+        return self._parse_response(data)

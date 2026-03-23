@@ -176,6 +176,7 @@ class DiscordBot:
         self._session_engine = SessionEngine()
         self._last_message_ts: dict[tuple[int, int], float] = {}
         self._typing_watchdog_task: asyncio.Task | None = None
+        self._variable_timers: dict[int, asyncio.Task] = {}
 
         intents = discord.Intents.default()
         intents.message_content = True
@@ -476,30 +477,33 @@ class DiscordBot:
 
         try:
             async with pending.channel.typing():
-                reply = await asyncio.to_thread(self.reply_service.generate_reply, messages)
-            try:
-                await self._reply_by_sentence(pending.anchor_message, reply)
-            except Exception as exc:
-                # Fallback only when reply reference is not supported for the current channel/message state.
-                self.logger.error("LOGIC", f"reply() failed: {exc}")
+                response = await asyncio.to_thread(self.reply_service.generate_reply_with_tools, messages)
+            reply = response.text
+            if reply:
                 try:
                     await self._reply_by_sentence(pending.anchor_message, reply)
-                except Exception as exc2:
-                    self.logger.error("LOGIC", f"reply() fallback failed: {exc2}")
-                    await pending.channel.send(
-                        reply,
-                        allowed_mentions=AllowedMentions.none(),
-                    )
-            self.history_store.append_entry(
-                channel_id=channel_id,
-                role="assistant",
-                username=self.settings.bot_key,
-                time=self._now_clock(),
-                content=reply,
-            )
+                except Exception as exc:
+                    self.logger.error("LOGIC", f"reply() failed: {exc}")
+                    try:
+                        await self._reply_by_sentence(pending.anchor_message, reply)
+                    except Exception as exc2:
+                        self.logger.error("LOGIC", f"reply() fallback failed: {exc2}")
+                        await pending.channel.send(
+                            reply,
+                            allowed_mentions=AllowedMentions.none(),
+                        )
+                self.history_store.append_entry(
+                    channel_id=channel_id,
+                    role="assistant",
+                    username=self.settings.bot_key,
+                    time=self._now_clock(),
+                    content=reply,
+                )
             self._log_typing(
                 f"🚀 api_sent user={pending.user_label} chunks={len(pending.chunks)} merged_len={len(merged_text)}"
             )
+            # Handle tool calls from LLM
+            self._handle_tool_calls(response, channel_id, pending.channel)
             # Start proactive idle timer after bot replies
             self._schedule_proactive(channel_id, pending.channel)
         except Exception as exc:  # noqa: BLE001
@@ -513,6 +517,68 @@ class DiscordBot:
                 )
             except Exception:
                 await pending.channel.send("我刚刚有点卡住了，等我一下再试试。")
+
+    def _handle_tool_calls(self, response, channel_id: int, channel: discord.abc.Messageable) -> None:
+        """Process tool calls returned by the LLM."""
+        for tc in response.tool_calls:
+            if tc.name == "set_timer":
+                seconds = tc.input.get("seconds", 0)
+                if isinstance(seconds, (int, float)) and seconds > 0:
+                    self._schedule_variable_timer(channel_id, channel, seconds)
+                    self.logger.info(f"⏰ variable_timer_set channel={channel_id} seconds={seconds}")
+
+    def _schedule_variable_timer(self, channel_id: int, channel: discord.abc.Messageable, seconds: float) -> None:
+        """Schedule a variable timer. When it fires, send context to AI and let it speak."""
+        # Cancel any existing variable timer for this channel
+        old_task = self._variable_timers.pop(channel_id, None)
+        if old_task is not None and not old_task.done():
+            old_task.cancel()
+        self._variable_timers[channel_id] = asyncio.create_task(
+            self._variable_timer_fire(channel_id, channel, seconds)
+        )
+
+    async def _variable_timer_fire(self, channel_id: int, channel: discord.abc.Messageable, seconds: float) -> None:
+        """Wait for the specified duration, then send context to AI."""
+        await asyncio.sleep(seconds)
+        self._variable_timers.pop(channel_id, None)
+
+        transcript = self.context_builder.build_context_for_api(
+            channel_id=channel_id,
+            pending_messages=[],
+        )
+        timer_note = f"[system: your set_timer for {seconds}s has expired]"
+        if transcript:
+            transcript = f"{transcript}\n{timer_note}"
+        else:
+            transcript = timer_note
+
+        messages = [{"role": "user", "content": transcript}]
+        try:
+            async with channel.typing():
+                response = await asyncio.to_thread(self.reply_service.generate_reply_with_tools, messages)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("UNKNOWN", "variable timer api request failed", exc=exc)
+            return
+
+        reply = response.text
+        if reply:
+            try:
+                await self._reply_by_sentence(None, reply, channel=channel)
+                self.history_store.append_entry(
+                    channel_id=channel_id,
+                    role="assistant",
+                    username=self.settings.bot_key,
+                    time=self._now_clock(),
+                    content=reply,
+                )
+                self.logger.info(f"⏰ variable_timer_sent channel={channel_id}")
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("UNKNOWN", "failed to send variable timer message", exc=exc)
+
+        # Handle any new tool calls (e.g. AI sets another timer)
+        self._handle_tool_calls(response, channel_id, channel)
+        # Restart 5min timer after variable timer fires
+        self._schedule_proactive(channel_id, channel)
 
     def _schedule_proactive(self, channel_id: int, channel: discord.abc.Messageable) -> None:
         """Schedule a proactive idle timer for a channel after bot replies."""
@@ -589,6 +655,10 @@ class DiscordBot:
         self._stop_typing_session(message.channel.id, message.author.id, reason="message")
         # Reset proactive idle timer — user is active
         self.proactive_service.cancel(message.channel.id)
+        # Cancel variable timer — user is active
+        old_vt = self._variable_timers.pop(message.channel.id, None)
+        if old_vt is not None and not old_vt.done():
+            old_vt.cancel()
         self._touch_pending_message(
             message=message,
             channel_id=message.channel.id,
