@@ -474,14 +474,16 @@ class DiscordBot:
                     if reason:
                         self._schedule_alarm(channel_id, channel, seconds, reason)
                     else:
-                        self._schedule_variable_timer(channel_id, channel, seconds)
-                    self.logger.info(f"⏰ timer_set channel={channel_id} seconds={seconds} reason={reason}")
+                        self._schedule_variable_timer(channel_id, channel, seconds, source="llm")
+                    self._log_typing(f"🤖 timer_set ch={channel_id} s={seconds} reason={reason}")
 
     def _schedule_variable_timer(
         self,
         channel_id: int,
         channel: discord.abc.Messageable,
         seconds: float,
+        *,
+        source: str = "auto",
     ) -> None:
         """Schedule a variable timer."""
         # Cancel any existing variable timer for this channel
@@ -495,7 +497,8 @@ class DiscordBot:
             self._variable_timer_fire(channel_id, channel, seconds)
         )
         self._variable_timers[channel_id] = (new_task, deadline)
-        self._log_typing(f"⏳ timer_start ch={channel_id} s={seconds}")
+        icon = "🤖" if source == "llm" else "⏳"
+        self._log_typing(f"{icon} timer_start ch={channel_id} s={seconds}")
 
     def _schedule_alarm(
         self,
