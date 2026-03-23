@@ -133,6 +133,18 @@ class PromptToolboxView(discord.ui.View):
             PromptEditModal(self.bot, target="soul", title="编辑人格提示词")
         )
 
+    @discord.ui.button(label="编辑Kink", style=discord.ButtonStyle.primary)
+    async def edit_kink(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(
+            PromptEditModal(self.bot, target="kink", title="编辑Kink")
+        )
+
+    @discord.ui.button(label="编辑用户信息", style=discord.ButtonStyle.primary)
+    async def edit_userinfo(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(
+            PromptEditModal(self.bot, target="userinfo", title="编辑用户信息")
+        )
+
     @discord.ui.button(label="编辑压缩提示词", style=discord.ButtonStyle.secondary)
     async def edit_compression(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(

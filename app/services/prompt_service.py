@@ -7,6 +7,8 @@ PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
 
 PROMPT_TARGETS = {
     "soul": PROMPTS_DIR / "soul.txt",
+    "kink": PROMPTS_DIR / "kink.txt",
+    "userinfo": PROMPTS_DIR / "userinfo.txt",
     "compression": PROMPTS_DIR / "compression.txt",
     "proactive": PROMPTS_DIR / "proactive.txt",
     "morning": PROMPTS_DIR / "morning.txt",
