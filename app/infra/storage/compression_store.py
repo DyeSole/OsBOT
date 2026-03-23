@@ -94,7 +94,6 @@ class CompressionStore:
         self,
         *,
         channel_id: int,
-        anchor_time: str,
         segment: dict[str, Any],
         version: int = 1,
     ) -> dict[str, Any]:
@@ -112,35 +111,12 @@ class CompressionStore:
         summaries.sort(key=lambda item: str(item.get("start_time", "")))
 
         payload = {
-            "anchor_time": anchor_time,
             "segment_ids": segment_ids,
             "segments": summaries,
             "version": version,
         }
         self._write_json(self._index_path(channel_id), payload)
         return payload
-
-    def load_anchor_window(self, *, channel_id: int, limit: int = 30) -> list[dict[str, str]]:
-        index = self.load_index(channel_id=channel_id)
-        anchor_time = index.get("anchor_time")
-        segments = index.get("segments")
-        if not isinstance(anchor_time, str) or not anchor_time:
-            return []
-        if not isinstance(segments, list):
-            return []
-
-        source_id = ""
-        for meta in reversed(segments):
-            if isinstance(meta, dict) and meta.get("end_time") == anchor_time:
-                candidate = meta.get("source_id")
-                if isinstance(candidate, str) and candidate:
-                    source_id = candidate
-                    break
-        if not source_id:
-            return []
-
-        rows = self.load_raw_archive(channel_id=channel_id, source_id=source_id)
-        return rows[-limit:] if rows else []
 
     @staticmethod
     def build_source_id(*, channel_id: int, start_time: str, end_time: str) -> str:

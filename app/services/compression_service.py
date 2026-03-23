@@ -79,7 +79,6 @@ class CompressionService:
         )
         self.compression_store.update_index(
             channel_id=channel_id,
-            anchor_time=end_time,
             segment=segment,
         )
         self.history_store.reset_active_history(channel_id=channel_id)
