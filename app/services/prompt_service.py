@@ -4,12 +4,12 @@ from pathlib import Path
 
 
 PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
-SOUL_PROMPT_PATH = PROMPTS_DIR / "soul.txt"
-COMPRESSION_PROMPT_PATH = PROMPTS_DIR / "compression.txt"
 
 PROMPT_TARGETS = {
-    "soul": SOUL_PROMPT_PATH,
-    "compression": COMPRESSION_PROMPT_PATH,
+    "soul": PROMPTS_DIR / "soul.txt",
+    "compression": PROMPTS_DIR / "compression.txt",
+    "proactive": PROMPTS_DIR / "proactive.txt",
+    "morning": PROMPTS_DIR / "morning.txt",
 }
 
 

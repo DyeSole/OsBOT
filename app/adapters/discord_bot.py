@@ -4,7 +4,6 @@ import asyncio
 import re
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from datetime import datetime, time as dt_time
 
 import discord
@@ -16,16 +15,6 @@ from app.core.session_engine import SessionEngine
 from app.infra.storage import ChatHistoryStore, CompressionStore
 from app.services.compression_service import CompressionService
 from app.services.context_builder import ContextBuilder
-from app.services.proactive_service import _load_proactive_prompt
-
-MORNING_PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts" / "morning.txt"
-
-
-def _load_morning_prompt() -> str:
-    try:
-        return MORNING_PROMPT_PATH.read_text(encoding="utf-8").strip()
-    except OSError:
-        return "早安！新的一天开始了，跟用户打个招呼吧。"
 from app.services.prompt_service import PromptService
 from app.services.reply_service import ReplyService
 
@@ -639,7 +628,7 @@ class DiscordBot:
         recent = self.history_store.load_all_entries(channel_id=channel_id)[-20:]
         transcript = self.history_store.render_entries(recent) if recent else ""
         is_llm_timer = seconds != self.proactive_idle_seconds
-        proactive_prompt = _load_proactive_prompt()
+        proactive_prompt = self.prompt_service.read_prompt("proactive")
         if is_llm_timer:
             timer_note = f"[system: your set_timer for {seconds}s has expired]\n{proactive_prompt}"
         else:
@@ -816,8 +805,8 @@ class DiscordBot:
         self._quiet_buffered_reasons.clear()
         self._quiet_channels.clear()
 
-        morning_prompt = _load_morning_prompt()
-        proactive_prompt = _load_proactive_prompt()
+        morning_prompt = self.prompt_service.read_prompt("morning")
+        proactive_prompt = self.prompt_service.read_prompt("proactive")
 
         for channel_id, channel in channels.items():
             recent = self.history_store.load_all_entries(channel_id=channel_id)[-10:]
