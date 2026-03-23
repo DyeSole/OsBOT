@@ -54,6 +54,9 @@ class ApiConfigModal(discord.ui.Modal, title="编辑 API 配置"):
         )
 
 
+KINK_SEPARATOR = "\n---KINK---\n"
+
+
 class PromptEditModal(discord.ui.Modal):
     def __init__(self, bot: DiscordBot, *, target: str, title: str):
         super().__init__(title=title)
@@ -76,6 +79,46 @@ class PromptEditModal(discord.ui.Modal):
         )
         await interaction.response.edit_message(
             content="提示词工具箱\n\n提示词已保存，下一次调用会自动生效。",
+            view=PromptToolboxView(self.bot),
+        )
+
+
+class SoulEditModal(discord.ui.Modal, title="编辑人格 & Kink"):
+    def __init__(self, bot: DiscordBot):
+        super().__init__()
+        self.bot = bot
+        raw = bot.prompt_service.read_prompt("soul")
+        if KINK_SEPARATOR in raw:
+            soul_part, kink_part = raw.split(KINK_SEPARATOR, 1)
+        else:
+            soul_part, kink_part = raw, ""
+        self.soul = discord.ui.TextInput(
+            label="人格提示词",
+            default=soul_part.strip()[:4000],
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=4000,
+        )
+        self.kink = discord.ui.TextInput(
+            label="Kink",
+            default=kink_part.strip()[:4000],
+            style=discord.TextStyle.paragraph,
+            required=False,
+            max_length=4000,
+        )
+        self.add_item(self.soul)
+        self.add_item(self.kink)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        soul_text = self.soul.value.strip()
+        kink_text = self.kink.value.strip()
+        if kink_text:
+            combined = f"{soul_text}{KINK_SEPARATOR}{kink_text}"
+        else:
+            combined = soul_text
+        self.bot.prompt_service.write_prompt(target="soul", content=combined)
+        await interaction.response.edit_message(
+            content="提示词工具箱\n\n人格 & Kink 已保存，下一次调用会自动生效。",
             view=PromptToolboxView(self.bot),
         )
 
@@ -127,19 +170,11 @@ class PromptToolboxView(discord.ui.View):
         super().__init__(timeout=300)
         self.bot = bot
 
-    @discord.ui.button(label="编辑人格提示词", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="人格 & Kink", style=discord.ButtonStyle.primary)
     async def edit_soul(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(
-            PromptEditModal(self.bot, target="soul", title="编辑人格提示词")
-        )
+        await interaction.response.send_modal(SoulEditModal(self.bot))
 
-    @discord.ui.button(label="编辑Kink", style=discord.ButtonStyle.primary)
-    async def edit_kink(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(
-            PromptEditModal(self.bot, target="kink", title="编辑Kink")
-        )
-
-    @discord.ui.button(label="编辑用户信息", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="用户信息", style=discord.ButtonStyle.primary)
     async def edit_userinfo(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(
             PromptEditModal(self.bot, target="userinfo", title="编辑用户信息")

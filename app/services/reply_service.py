@@ -9,7 +9,6 @@ from app.infra.llm_client import LLMClient, LLMResponse
 
 PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
 SOUL_PROMPT_PATH = PROMPTS_DIR / "soul.txt"
-KINK_PROMPT_PATH = PROMPTS_DIR / "kink.txt"
 USERINFO_PROMPT_PATH = PROMPTS_DIR / "userinfo.txt"
 
 TOOLS: list[dict[str, Any]] = [
@@ -47,14 +46,14 @@ def _read_optional(path: Path) -> str:
 
 
 def load_system_prompt() -> str:
-    parts = [_read_optional(SOUL_PROMPT_PATH)]
-    kink = _read_optional(KINK_PROMPT_PATH)
-    if kink:
-        parts.append(kink)
+    parts: list[str] = []
+    soul = _read_optional(SOUL_PROMPT_PATH)
+    if soul:
+        parts.append(f"[人格设定]\n{soul}")
     userinfo = _read_optional(USERINFO_PROMPT_PATH)
     if userinfo:
-        parts.append(userinfo)
-    return "\n\n".join(p for p in parts if p)
+        parts.append(f"[用户信息]\n{userinfo}")
+    return "\n\n".join(parts)
 
 
 class ReplyService:
