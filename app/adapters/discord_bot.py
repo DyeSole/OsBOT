@@ -79,6 +79,7 @@ class DiscordBot:
         self.client.event(self.on_ready)
         self.client.event(self.on_message)
         self.client.event(self.on_typing)
+        self.client.event(self.on_guild_channel_delete)
         self._register_app_commands()
 
     def _register_app_commands(self) -> None:
@@ -847,6 +848,31 @@ class DiscordBot:
                     expired.append(key)
             for channel_id, user_id in expired:
                 self._stop_typing_session(channel_id, user_id, reason="timeout")
+
+    async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
+        """When a channel is deleted, clean up orphaned data files."""
+        self.logger.info(f"🗑️ channel_deleted id={channel.id} name={getattr(channel, 'name', '?')}")
+        await self._cleanup_orphaned_data()
+
+    async def _cleanup_orphaned_data(self) -> None:
+        """Remove history/memory for channels that no longer exist in any guild."""
+        all_guild_channel_ids: set[int] = set()
+        for guild in self.client.guilds:
+            for ch in guild.channels:
+                all_guild_channel_ids.add(ch.id)
+            for thread in guild.threads:
+                all_guild_channel_ids.add(thread.id)
+
+        stored_ids = self.history_store.all_channel_ids() | self.compression_store.all_channel_ids()
+        orphans = stored_ids - all_guild_channel_ids
+        if not orphans:
+            return
+
+        for cid in orphans:
+            h = self.history_store.delete_channel(cid)
+            m = self.compression_store.delete_channel(cid)
+            if h or m:
+                self.logger.info(f"🧹 cleaned_orphan channel_id={cid} history={h} memory={m}")
 
     async def on_ready(self) -> None:
         self.logger.startup_jar(cat_count=1)

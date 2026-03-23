@@ -135,6 +135,26 @@ class CompressionStore:
             "keywords": segment.get("keywords", []),
         }
 
+    def delete_channel(self, channel_id: int) -> bool:
+        """Delete all memory data for a channel. Returns True if data was removed."""
+        import shutil
+        root = self._channel_root(channel_id)
+        if root.exists():
+            shutil.rmtree(root)
+            return True
+        return False
+
+    def all_channel_ids(self) -> set[int]:
+        """Return all channel IDs that have memory directories."""
+        ids: set[int] = set()
+        for path in self.memory_dir.iterdir():
+            if path.is_dir():
+                try:
+                    ids.add(int(path.name))
+                except ValueError:
+                    pass
+        return ids
+
     @staticmethod
     def _sanitize_source_id(source_id: str) -> str:
         return source_id.replace(":", "_").replace("/", "-").replace("\\", "-")

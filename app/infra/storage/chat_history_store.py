@@ -144,6 +144,24 @@ class ChatHistoryStore:
             )
         return entries
 
+    def delete_channel(self, channel_id: int) -> bool:
+        """Delete history file for a channel. Returns True if a file was removed."""
+        path = self._history_path(channel_id)
+        if path.exists():
+            path.unlink()
+            return True
+        return False
+
+    def all_channel_ids(self) -> set[int]:
+        """Return all channel IDs that have history files."""
+        ids: set[int] = set()
+        for path in self.data_dir.glob("*.jsonl"):
+            try:
+                ids.add(int(path.stem))
+            except ValueError:
+                pass
+        return ids
+
     @staticmethod
     def _hhmm(timestamp: str) -> str:
         try:
