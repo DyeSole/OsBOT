@@ -624,10 +624,8 @@ class DiscordBot:
             self.logger.info(f"🤫 variable_timer_discarded_quiet channel={channel_id} seconds={seconds}")
             return
 
-        transcript = self.context_builder.build_context_for_api(
-            channel_id=channel_id,
-            pending_messages=[],
-        )
+        recent = self.history_store.load_all_entries(channel_id=channel_id)[-20:]
+        transcript = self.history_store.render_entries(recent) if recent else ""
         is_llm_timer = seconds != self.proactive_idle_seconds
         proactive_prompt = _load_proactive_prompt()
         if is_llm_timer:
