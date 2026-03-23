@@ -6,8 +6,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from app.infra.storage.chat_history_store import ChatHistoryStore
-
 
 class CompressionStore:
     def __init__(self, memory_dir: Path):
@@ -42,10 +40,6 @@ class CompressionStore:
         path = self._raw_dir(channel_id) / f"{self._sanitize_source_id(source_id)}.jsonl"
         self._write_jsonl(path, messages)
         return path
-
-    def load_raw_archive(self, *, channel_id: int, source_id: str) -> list[dict[str, str]]:
-        path = self._raw_dir(channel_id) / f"{self._sanitize_source_id(source_id)}.jsonl"
-        return ChatHistoryStore._read_jsonl_entries(path)
 
     def save_summary_segment(
         self,
