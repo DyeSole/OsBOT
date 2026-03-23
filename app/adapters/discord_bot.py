@@ -271,7 +271,11 @@ class DiscordBot:
                 if self.settings.split_mode == "chat":
                     parts = self._split_sentences(buffer)
                     if len(parts) > 1:
+                        delay = self.settings.chat_reply_delay_seconds
                         for s in parts[:-1]:
+                            if not is_first and delay > 0:
+                                async with channel.typing():
+                                    await asyncio.sleep(delay)
                             if is_first and anchor_message is not None:
                                 await anchor_message.reply(
                                     s, mention_author=False,
@@ -285,6 +289,9 @@ class DiscordBot:
                         buffer = parts[-1]
             elif kind == "done":
                 if buffer.strip():
+                    if not is_first and self.settings.chat_reply_delay_seconds > 0:
+                        async with channel.typing():
+                            await asyncio.sleep(self.settings.chat_reply_delay_seconds)
                     if is_first and anchor_message is not None:
                         await anchor_message.reply(
                             buffer.strip(), mention_author=False,
