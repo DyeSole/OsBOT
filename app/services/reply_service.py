@@ -11,7 +11,34 @@ PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
 SOUL_PROMPT_PATH = PROMPTS_DIR / "soul.txt"
 USERINFO_PROMPT_PATH = PROMPTS_DIR / "userinfo.txt"
 
-TOOLS: list[dict[str, Any]] = [
+# Available in normal conversation — only for user-requested alarms
+ALARM_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "set_timer",
+        "description": (
+            "仅当用户明确要求你设置闹钟或提醒时才使用此工具，其他任何情况都禁止调用。"
+            "时间单位为秒。例如想设 30 分钟就传 1800。"
+            "必须在 reason 中写明提醒内容，到期后你必须把这件事告诉用户，不可以沉默。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "seconds": {
+                    "type": "number",
+                    "description": "计时器时长（秒），不限范围。",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "提醒内容。必填。",
+                },
+            },
+            "required": ["seconds", "reason"],
+        },
+    },
+]
+
+# Available during timer/alarm fires — bot can also set voluntary timers
+TIMER_TOOLS: list[dict[str, Any]] = [
     {
         "name": "set_timer",
         "description": (
@@ -85,7 +112,7 @@ class ReplyService:
         return self.client.generate_with_tools(
             messages=messages,
             system_prompt=load_system_prompt(),
-            tools=TOOLS if include_tools else [],
+            tools=TIMER_TOOLS if include_tools else ALARM_TOOLS,
         )
 
     def stream_reply_with_tools(
@@ -101,6 +128,6 @@ class ReplyService:
         return self.client.stream_with_tools(
             messages=messages,
             system_prompt=load_system_prompt(),
-            tools=TOOLS if include_tools else [],
+            tools=TIMER_TOOLS if include_tools else ALARM_TOOLS,
             on_text=on_text,
         )
