@@ -467,7 +467,7 @@ class DiscordBot:
         if self._is_quiet_time():
             self._quiet_channels.setdefault(channel_id, channel)
             self._schedule_quiet_flush()
-            self.logger.info(f"🤫 variable_timer_discarded_quiet channel={channel_id} seconds={seconds}")
+            self._log_typing(f"🤫 timer_quiet ch={channel_id} s={seconds}")
             return
 
         recent = self.history_store.load_all_entries(channel_id=channel_id)[-20:]
@@ -509,7 +509,7 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-                self.logger.info(f"⏰ variable_timer_sent channel={channel_id}")
+                self._log_typing(f"⏰ timer_sent ch={channel_id}")
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send variable timer message", exc=exc)
 
@@ -691,7 +691,7 @@ class DiscordBot:
                         time=self._now_clock(),
                         content=reply,
                     )
-                    self.logger.info(f"🌅 morning_sent channel={channel_id} alarms={len(reasons)}")
+                    self._log_typing(f"🌅 morning ch={channel_id} alarms={len(reasons)}")
                 except Exception as exc:  # noqa: BLE001
                     self.logger.error("UNKNOWN", "failed to send morning message", exc=exc)
 
