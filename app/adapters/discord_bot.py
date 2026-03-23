@@ -68,6 +68,7 @@ class DiscordBot:
         self._alarms: dict[int, list[asyncio.Task]] = {}  # per-channel, multiple allowed
         self._pending_alarm_reasons: dict[int, list[str]] = {}  # buffered for next timer fire
         self._pending_reactions: dict[int, list[str]] = {}  # buffered reactions for next timer fire
+        self._typing_nudge_channels: set[int] = set()  # channels with a pending typing-nudge timer
         self._quiet_buffered_reasons: dict[int, list[str]] = {}  # buffered during quiet hours
         self._quiet_channels: dict[int, discord.abc.Messageable] = {}  # channel refs for flush
         self._quiet_flush_task: asyncio.Task | None = None
@@ -330,7 +331,8 @@ class DiscordBot:
             return name.strip()
         return str(getattr(user, "id", "unknown"))
 
-    def _touch_typing_session(self, channel_id: int, user_id: int, *, channel_label: str, user_label: str) -> None:
+    def _touch_typing_session(self, channel_id: int, user_id: int, *, channel_label: str, user_label: str) -> bool:
+        """Track typing. Returns True if this is a *new* typing session."""
         key = self._typing_key(channel_id, user_id)
         now = time.monotonic()
         session = self._typing_sessions.get(key)
@@ -348,8 +350,9 @@ class DiscordBot:
             self._log_typing(
                 f"⌨️ typing_start user={user_label}{since_last_msg}"
             )
-            return
+            return True
         session.last_seen_at = now
+        return False
 
     def _stop_typing_session(self, channel_id: int, user_id: int, reason: str) -> None:
         key = self._typing_key(channel_id, user_id)
@@ -612,11 +615,16 @@ class DiscordBot:
 
         recent = self.history_store.load_all_entries(channel_id=channel_id)[-20:]
         transcript = self.history_store.render_entries(recent) if recent else ""
-        is_llm_timer = seconds != self.proactive_idle_seconds
-        proactive_prompt = self.prompt_service.read_prompt("proactive")
-        if is_llm_timer:
+        is_typing_nudge = channel_id in self._typing_nudge_channels
+        self._typing_nudge_channels.discard(channel_id)
+        if is_typing_nudge:
+            nudge_prompt = self.prompt_service.read_prompt("typing_nudge")
+            timer_note = f"[系统提示] {nudge_prompt}"
+        elif seconds != self.proactive_idle_seconds:
+            proactive_prompt = self.prompt_service.read_prompt("proactive")
             timer_note = f"[system: your set_timer for {seconds}s has expired]\n{proactive_prompt}"
         else:
+            proactive_prompt = self.prompt_service.read_prompt("proactive")
             timer_note = f"[系统提示] {proactive_prompt}"
         # Attach any buffered alarm reasons
         pending_reasons = self._pending_alarm_reasons.pop(channel_id, [])
@@ -738,9 +746,26 @@ class DiscordBot:
 
     def _schedule_proactive(self, channel_id: int, channel: discord.abc.Messageable) -> None:
         """Schedule proactive idle timer — uses the same slot as variable timer."""
+        self._typing_nudge_channels.discard(channel_id)
         if self.proactive_idle_seconds <= 0:
             return
         self._schedule_variable_timer(channel_id, channel, self.proactive_idle_seconds)
+
+    _TYPING_NUDGE_SECONDS = 60.0
+
+    def _maybe_schedule_typing_nudge(
+        self, channel_id: int, channel: discord.abc.Messageable,
+    ) -> None:
+        """Schedule a 60s typing-nudge, but only if it's shorter than the current timer."""
+        nudge = self._TYPING_NUDGE_SECONDS
+        vt = self._variable_timers.get(channel_id)
+        if vt is not None:
+            _, deadline = vt
+            remaining = deadline - time.monotonic()
+            if remaining <= nudge:
+                return  # existing timer fires sooner, keep it
+        self._typing_nudge_channels.add(channel_id)
+        self._schedule_variable_timer(channel_id, channel, nudge, source="typing_nudge")
 
     @staticmethod
     def _parse_time(s: str) -> dt_time | None:
@@ -905,7 +930,7 @@ class DiscordBot:
             return
         if not hasattr(channel, "id"):
             return
-        self._touch_typing_session(
+        is_new = self._touch_typing_session(
             channel.id,
             user.id,
             channel_label=self._channel_label(channel),
@@ -913,6 +938,9 @@ class DiscordBot:
         )
         self._touch_pending_activity(channel.id, user.id)
         self._session_engine.switch_to_long_timer(channel.id, user.id)
+
+        if is_new:
+            self._maybe_schedule_typing_nudge(channel.id, channel)
 
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
         if payload.user_id == self.client.user.id:  # type: ignore[union-attr]
@@ -977,6 +1005,7 @@ class DiscordBot:
         self._last_message_ts[key] = time.monotonic()
 
         self._stop_typing_session(message.channel.id, message.author.id, reason="message")
+        self._typing_nudge_channels.discard(message.channel.id)
         # Cancel variable/proactive timer — user is active
         old_vt = self._variable_timers.pop(message.channel.id, None)
         if old_vt is not None:
