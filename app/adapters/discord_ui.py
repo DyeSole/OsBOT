@@ -165,6 +165,46 @@ class QuietHoursModal(discord.ui.Modal, title="静默时间设置"):
         )
 
 
+class ProactiveModal(discord.ui.Modal, title="主动发信息"):
+    def __init__(self, bot: DiscordBot):
+        super().__init__()
+        self.bot = bot
+        env_values = read_env_values()
+        current = bot.settings
+        self.idle_seconds = discord.ui.TextInput(
+            label="空闲计时（秒），0=关闭",
+            default=env_values.get(
+                "PROACTIVE_IDLE_SECONDS",
+                str(int(current.proactive_idle_seconds)),
+            ),
+            required=True,
+            max_length=10,
+        )
+        proactive_text = bot.prompt_service.read_prompt("proactive")
+        self.prompt = discord.ui.TextInput(
+            label="主动发信提示词",
+            default=proactive_text[:4000],
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=4000,
+        )
+        self.add_item(self.idle_seconds)
+        self.add_item(self.prompt)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        update_env_values(
+            {"PROACTIVE_IDLE_SECONDS": self.idle_seconds.value.strip()}
+        )
+        self.bot.prompt_service.write_prompt(
+            target="proactive", content=self.prompt.value,
+        )
+        await self.bot.reload_settings_if_needed()
+        await interaction.response.edit_message(
+            content="工具箱\n\n主动发信配置已保存，立即生效。",
+            view=ToolboxView(self.bot),
+        )
+
+
 class PromptToolboxView(discord.ui.View):
     def __init__(self, bot: DiscordBot):
         super().__init__(timeout=300)
@@ -242,6 +282,10 @@ class ToolboxView(discord.ui.View):
     @discord.ui.button(label="API配置", style=discord.ButtonStyle.primary)
     async def api_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(ApiConfigModal(self.bot))
+
+    @discord.ui.button(label="主动发信息", style=discord.ButtonStyle.primary)
+    async def proactive(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(ProactiveModal(self.bot))
 
     @discord.ui.button(label="静默时间", style=discord.ButtonStyle.secondary)
     async def quiet_hours(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
