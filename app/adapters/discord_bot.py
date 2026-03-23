@@ -215,7 +215,6 @@ class DiscordBot:
         reply: str,
         *,
         channel: discord.abc.Messageable | None = None,
-        sent: list[discord.Message] | None = None,
     ) -> None:
         do_split = self.settings.split_mode == "chat"
         sentences = self._split_sentences(reply, split=do_split)
@@ -226,18 +225,16 @@ class DiscordBot:
             return
         for idx, sentence in enumerate(sentences):
             if idx == 0 and anchor_message is not None:
-                msg = await anchor_message.reply(
+                await anchor_message.reply(
                     sentence,
                     mention_author=False,
                     allowed_mentions=AllowedMentions.none(),
                 )
             else:
-                msg = await target_channel.send(
+                await target_channel.send(
                     sentence,
                     allowed_mentions=AllowedMentions.none(),
                 )
-            if sent is not None:
-                sent.append(msg)
             if idx < len(sentences) - 1:
                 await asyncio.sleep(0.8)
 
@@ -248,7 +245,6 @@ class DiscordBot:
         messages: list[dict[str, str]],
         *,
         include_tools: bool = False,
-        sent: list[discord.Message] | None = None,
     ) -> LLMResponse:
         """Stream LLM response, sending each sentence to Discord as it completes."""
         from app.infra.llm_client import LLMResponse
@@ -289,16 +285,14 @@ class DiscordBot:
                                 async with channel.typing():
                                     await asyncio.sleep(delay)
                             if is_first and anchor_message is not None:
-                                msg = await anchor_message.reply(
+                                await anchor_message.reply(
                                     s, mention_author=False,
                                     allowed_mentions=AllowedMentions.none(),
                                 )
                             else:
-                                msg = await channel.send(
+                                await channel.send(
                                     s, allowed_mentions=AllowedMentions.none(),
                                 )
-                            if sent is not None:
-                                sent.append(msg)
                             is_first = False
                         buffer = parts[-1]
             elif kind == "done":
@@ -307,16 +301,14 @@ class DiscordBot:
                         async with channel.typing():
                             await asyncio.sleep(self.settings.chat_reply_delay_seconds)
                     if is_first and anchor_message is not None:
-                        msg = await anchor_message.reply(
+                        await anchor_message.reply(
                             buffer.strip(), mention_author=False,
                             allowed_mentions=AllowedMentions.none(),
                         )
                     else:
-                        msg = await channel.send(
+                        await channel.send(
                             buffer.strip(), allowed_mentions=AllowedMentions.none(),
                         )
-                    if sent is not None:
-                        sent.append(msg)
                 return value  # type: ignore[return-value]
             elif kind == "error":
                 raise value  # type: ignore[misc]
@@ -627,14 +619,11 @@ class DiscordBot:
         is_typing_nudge = channel_id in self._typing_nudge_channels
         self._typing_nudge_channels.discard(channel_id)
         if is_typing_nudge:
-            nudge_prompt = self.prompt_service.read_prompt("typing_nudge")
-            timer_note = f"[系统提示] {nudge_prompt}"
+            timer_note = f"[系统提示] {self.prompt_service.read_prompt('typing_nudge')}"
         elif seconds != self.proactive_idle_seconds:
-            proactive_prompt = self.prompt_service.read_prompt("proactive")
-            timer_note = f"[system: your set_timer for {seconds}s has expired]\n{proactive_prompt}"
+            timer_note = f"[system: your set_timer for {seconds}s has expired]\n{self.prompt_service.read_prompt('proactive')}"
         else:
-            proactive_prompt = self.prompt_service.read_prompt("proactive")
-            timer_note = f"[系统提示] {proactive_prompt}"
+            timer_note = f"[系统提示] {self.prompt_service.read_prompt('proactive')}"
         # Attach any buffered alarm reasons
         pending_reasons = self._pending_alarm_reasons.pop(channel_id, [])
         if pending_reasons:
