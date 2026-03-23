@@ -198,6 +198,22 @@ class ToolboxView(discord.ui.View):
     def __init__(self, bot: DiscordBot):
         super().__init__(timeout=300)
         self.bot = bot
+        is_novel = bot.settings.split_mode == "novel"
+        label = "小说模式 ✓" if is_novel else "聊天模式 ✓"
+        self.split_btn = discord.ui.Button(label=label, style=discord.ButtonStyle.success if is_novel else discord.ButtonStyle.primary)
+        self.split_btn.callback = self._toggle_split_mode
+        self.add_item(self.split_btn)
+
+    async def _toggle_split_mode(self, interaction: discord.Interaction) -> None:
+        current = self.bot.settings.split_mode
+        new_mode = "chat" if current == "novel" else "novel"
+        update_env_values({"SPLIT_MODE": new_mode})
+        await self.bot.reload_settings_if_needed()
+        label = "小说模式" if new_mode == "novel" else "聊天模式"
+        await interaction.response.edit_message(
+            content=f"工具箱\n\n已切换为{label}",
+            view=ToolboxView(self.bot),
+        )
 
     @discord.ui.button(label="API配置", style=discord.ButtonStyle.primary)
     async def api_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

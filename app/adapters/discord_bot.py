@@ -191,10 +191,12 @@ class DiscordBot:
             self.logger.info(message)
 
     @staticmethod
-    def _split_sentences(text: str) -> list[str]:
+    def _split_sentences(text: str, *, split: bool = True) -> list[str]:
         stripped = (text or "").strip()
         if not stripped:
             return []
+        if not split:
+            return [stripped]
         parts = re.split(r"\n+", stripped)
         out = [p.strip() for p in parts if p and p.strip()]
         return out or [stripped]
@@ -206,7 +208,8 @@ class DiscordBot:
         *,
         channel: discord.abc.Messageable | None = None,
     ) -> None:
-        sentences = self._split_sentences(reply)
+        do_split = self.settings.split_mode == "chat"
+        sentences = self._split_sentences(reply, split=do_split)
         if not sentences:
             return
         target_channel = channel or (anchor_message.channel if anchor_message else None)
@@ -265,20 +268,21 @@ class DiscordBot:
 
             if kind == "text":
                 buffer += value
-                parts = self._split_sentences(buffer)
-                if len(parts) > 1:
-                    for s in parts[:-1]:
-                        if is_first and anchor_message is not None:
-                            await anchor_message.reply(
-                                s, mention_author=False,
-                                allowed_mentions=AllowedMentions.none(),
-                            )
-                        else:
-                            await channel.send(
-                                s, allowed_mentions=AllowedMentions.none(),
-                            )
-                        is_first = False
-                    buffer = parts[-1]
+                if self.settings.split_mode == "chat":
+                    parts = self._split_sentences(buffer)
+                    if len(parts) > 1:
+                        for s in parts[:-1]:
+                            if is_first and anchor_message is not None:
+                                await anchor_message.reply(
+                                    s, mention_author=False,
+                                    allowed_mentions=AllowedMentions.none(),
+                                )
+                            else:
+                                await channel.send(
+                                    s, allowed_mentions=AllowedMentions.none(),
+                                )
+                            is_first = False
+                        buffer = parts[-1]
             elif kind == "done":
                 if buffer.strip():
                     if is_first and anchor_message is not None:
