@@ -171,8 +171,9 @@ class DiscordBot:
         self._session_engine = SessionEngine()
         self._last_message_ts: dict[tuple[int, int], float] = {}
         self._typing_watchdog_task: asyncio.Task | None = None
-        self._variable_timers: dict[int, asyncio.Task] = {}
+        self._variable_timers: dict[int, tuple[asyncio.Task, float]] = {}  # (task, deadline)
         self._alarms: dict[int, list[asyncio.Task]] = {}  # per-channel, multiple allowed
+        self._pending_alarm_reasons: dict[int, list[str]] = {}  # buffered for next timer fire
 
         intents = discord.Intents.default()
         intents.message_content = True
@@ -535,12 +536,16 @@ class DiscordBot:
     ) -> None:
         """Schedule a variable timer."""
         # Cancel any existing variable timer for this channel
-        old_task = self._variable_timers.pop(channel_id, None)
-        if old_task is not None and not old_task.done():
-            old_task.cancel()
-        self._variable_timers[channel_id] = asyncio.create_task(
+        old = self._variable_timers.pop(channel_id, None)
+        if old is not None:
+            task, _ = old
+            if not task.done():
+                task.cancel()
+        deadline = time.monotonic() + seconds
+        new_task = asyncio.create_task(
             self._variable_timer_fire(channel_id, channel, seconds)
         )
+        self._variable_timers[channel_id] = (new_task, deadline)
 
     def _schedule_alarm(
         self,
@@ -575,6 +580,13 @@ class DiscordBot:
             timer_note = f"[system: your set_timer for {seconds}s has expired]\n{proactive_prompt}"
         else:
             timer_note = f"[系统提示] {proactive_prompt}"
+        # Attach any buffered alarm reasons
+        pending_reasons = self._pending_alarm_reasons.pop(channel_id, [])
+        if pending_reasons:
+            alarm_lines = "\n".join(f"- {r}" for r in pending_reasons)
+            timer_note += (
+                f"\n[system: 以下闹钟已到期，你必须提醒用户这些事情，不可以沉默]\n{alarm_lines}"
+            )
         if transcript:
             transcript = f"{transcript}\n{timer_note}"
         else:
@@ -624,6 +636,16 @@ class DiscordBot:
                 alarm_list.remove(task)
             if not alarm_list:
                 self._alarms.pop(channel_id, None)
+
+        # If a variable/proactive timer is about to fire soon, buffer this alarm
+        vt = self._variable_timers.get(channel_id)
+        if vt is not None:
+            _, deadline = vt
+            remaining = deadline - time.monotonic()
+            if remaining < self.proactive_idle_seconds:
+                self._pending_alarm_reasons.setdefault(channel_id, []).append(reason)
+                self.logger.info(f"⏰ alarm_buffered channel={channel_id} reason={reason} remaining={remaining:.0f}s")
+                return
 
         recent = self.history_store.load_all_entries(channel_id=channel_id)[-10:]
         history_block = self.history_store.render_entries(recent) if recent else ""
@@ -719,8 +741,10 @@ class DiscordBot:
         self._stop_typing_session(message.channel.id, message.author.id, reason="message")
         # Cancel variable/proactive timer — user is active
         old_vt = self._variable_timers.pop(message.channel.id, None)
-        if old_vt is not None and not old_vt.done():
-            old_vt.cancel()
+        if old_vt is not None:
+            task, _ = old_vt
+            if not task.done():
+                task.cancel()
         self._touch_pending_message(
             message=message,
             channel_id=message.channel.id,
