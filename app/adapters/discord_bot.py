@@ -628,11 +628,14 @@ class DiscordBot:
             if not alarm_list:
                 self._alarms.pop(channel_id, None)
 
-        transcript = (
+        recent = self.history_store.load_all_entries(channel_id=channel_id)[-10:]
+        history_block = self.history_store.render_entries(recent) if recent else ""
+        alarm_note = (
             f"[system: your set_timer for {seconds}s has expired]\n"
             f"你之前答应提醒用户：{reason}\n"
             "请现在提醒用户这件事，不可以沉默。保持你一贯的说话风格和人格。"
         )
+        transcript = f"{history_block}\n{alarm_note}".strip()
 
         messages = [{"role": "user", "content": transcript}]
         try:
