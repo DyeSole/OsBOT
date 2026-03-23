@@ -16,6 +16,8 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "设置一个计时器。计时器到期后你会收到通知，届时你可以选择对用户说话或保持沉默。"
             "时间单位为秒。例如想设 30 分钟就传 1800。"
+            "如果用户明确要求你提醒他某件事，请在 reason 中写明提醒内容，"
+            "到期后你必须把这件事告诉用户，不可以沉默。"
         ),
         "input_schema": {
             "type": "object",
@@ -23,6 +25,10 @@ TOOLS: list[dict[str, Any]] = [
                 "seconds": {
                     "type": "number",
                     "description": "计时器时长（秒）",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "提醒内容。用户主动要求提醒时填写，AI 自己设的计时器不需要填。",
                 },
             },
             "required": ["seconds"],

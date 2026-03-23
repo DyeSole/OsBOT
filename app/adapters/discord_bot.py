@@ -523,21 +523,34 @@ class DiscordBot:
         for tc in response.tool_calls:
             if tc.name == "set_timer":
                 seconds = tc.input.get("seconds", 0)
+                reason = tc.input.get("reason") or None
                 if isinstance(seconds, (int, float)) and seconds > 0:
-                    self._schedule_variable_timer(channel_id, channel, seconds)
-                    self.logger.info(f"⏰ variable_timer_set channel={channel_id} seconds={seconds}")
+                    self._schedule_variable_timer(channel_id, channel, seconds, reason)
+                    self.logger.info(f"⏰ variable_timer_set channel={channel_id} seconds={seconds} reason={reason}")
 
-    def _schedule_variable_timer(self, channel_id: int, channel: discord.abc.Messageable, seconds: float) -> None:
+    def _schedule_variable_timer(
+        self,
+        channel_id: int,
+        channel: discord.abc.Messageable,
+        seconds: float,
+        reason: str | None = None,
+    ) -> None:
         """Schedule a variable timer. When it fires, send context to AI and let it speak."""
         # Cancel any existing variable timer for this channel
         old_task = self._variable_timers.pop(channel_id, None)
         if old_task is not None and not old_task.done():
             old_task.cancel()
         self._variable_timers[channel_id] = asyncio.create_task(
-            self._variable_timer_fire(channel_id, channel, seconds)
+            self._variable_timer_fire(channel_id, channel, seconds, reason)
         )
 
-    async def _variable_timer_fire(self, channel_id: int, channel: discord.abc.Messageable, seconds: float) -> None:
+    async def _variable_timer_fire(
+        self,
+        channel_id: int,
+        channel: discord.abc.Messageable,
+        seconds: float,
+        reason: str | None = None,
+    ) -> None:
         """Wait for the specified duration, then send context to AI."""
         await asyncio.sleep(seconds)
         self._variable_timers.pop(channel_id, None)
@@ -546,8 +559,15 @@ class DiscordBot:
             channel_id=channel_id,
             pending_messages=[],
         )
-        proactive_prompt = _load_proactive_prompt()
-        timer_note = f"[system: your set_timer for {seconds}s has expired]\n{proactive_prompt}"
+        if reason:
+            timer_note = (
+                f"[system: your set_timer for {seconds}s has expired]\n"
+                f"你之前答应提醒用户：{reason}\n"
+                "请现在提醒用户这件事，不可以沉默。保持你一贯的说话风格和人格。"
+            )
+        else:
+            proactive_prompt = _load_proactive_prompt()
+            timer_note = f"[system: your set_timer for {seconds}s has expired]\n{proactive_prompt}"
         if transcript:
             transcript = f"{transcript}\n{timer_note}"
         else:
@@ -562,7 +582,8 @@ class DiscordBot:
             return
 
         reply = (response.text or "").strip()
-        if reply and "[SILENT]" not in reply:
+        is_alarm = reason is not None
+        if is_alarm or (reply and "[SILENT]" not in reply):
             try:
                 await self._reply_by_sentence(None, reply, channel=channel)
                 self.history_store.append_entry(
