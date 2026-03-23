@@ -15,7 +15,7 @@ from app.core.session_engine import SessionEngine
 from app.infra.storage import ChatHistoryStore, CompressionStore
 from app.services.compression_service import CompressionService
 from app.services.context_builder import ContextBuilder
-from app.services.proactive_service import ProactiveService
+from app.services.proactive_service import ProactiveService, _load_proactive_prompt
 from app.services.prompt_service import PromptService
 from app.services.reply_service import ReplyService
 
@@ -546,10 +546,8 @@ class DiscordBot:
             channel_id=channel_id,
             pending_messages=[],
         )
-        timer_note = (
-            f"[system: your set_timer for {seconds}s has expired]\n"
-            "你可以选择对用户说话、保持沉默，或再次使用 set_timer 设置一个新的计时器。"
-        )
+        proactive_prompt = _load_proactive_prompt()
+        timer_note = f"[system: your set_timer for {seconds}s has expired]\n{proactive_prompt}"
         if transcript:
             transcript = f"{transcript}\n{timer_note}"
         else:
