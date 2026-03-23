@@ -538,11 +538,13 @@ class DiscordBot:
         channel: discord.abc.Messageable,
         seconds: float,
     ) -> None:
-        """Schedule a variable timer. When it fires, send context to AI and let it speak."""
+        """Schedule a variable timer, replacing the 5-min proactive timer."""
         # Cancel any existing variable timer for this channel
         old_task = self._variable_timers.pop(channel_id, None)
         if old_task is not None and not old_task.done():
             old_task.cancel()
+        # Cancel proactive timer — variable timer takes its place
+        self.proactive_service.cancel(channel_id)
         self._variable_timers[channel_id] = asyncio.create_task(
             self._variable_timer_fire(channel_id, channel, seconds)
         )
@@ -689,6 +691,9 @@ class DiscordBot:
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send proactive message", exc=exc)
 
+        # Don't schedule proactive if a variable timer is already running
+        if channel_id in self._variable_timers:
+            return
         self.proactive_service.schedule(channel_id, _send_proactive)
 
     async def _typing_watchdog(self) -> None:
