@@ -538,13 +538,11 @@ class DiscordBot:
         channel: discord.abc.Messageable,
         seconds: float,
     ) -> None:
-        """Schedule a variable timer, replacing the 5-min proactive timer."""
+        """Schedule a variable timer."""
         # Cancel any existing variable timer for this channel
         old_task = self._variable_timers.pop(channel_id, None)
         if old_task is not None and not old_task.done():
             old_task.cancel()
-        # Cancel proactive timer — variable timer takes its place
-        self.proactive_service.cancel(channel_id)
         self._variable_timers[channel_id] = asyncio.create_task(
             self._variable_timer_fire(channel_id, channel, seconds)
         )
