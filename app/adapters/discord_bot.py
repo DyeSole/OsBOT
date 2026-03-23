@@ -583,17 +583,19 @@ class DiscordBot:
     def _schedule_proactive(self, channel_id: int, channel: discord.abc.Messageable) -> None:
         """Schedule a proactive idle timer for a channel after bot replies."""
 
-        async def _send_proactive(reply: str) -> None:
+        async def _send_proactive(reply: str, response) -> None:
             try:
-                await self._reply_by_sentence(None, reply, channel=channel)
-                self.history_store.append_entry(
-                    channel_id=channel_id,
-                    role="assistant",
-                    username=self.settings.bot_key,
-                    time=self._now_clock(),
-                    content=reply,
-                )
-                self.logger.info(f"💬 proactive_sent channel={channel_id}")
+                if reply:
+                    await self._reply_by_sentence(None, reply, channel=channel)
+                    self.history_store.append_entry(
+                        channel_id=channel_id,
+                        role="assistant",
+                        username=self.settings.bot_key,
+                        time=self._now_clock(),
+                        content=reply,
+                    )
+                    self.logger.info(f"💬 proactive_sent channel={channel_id}")
+                self._handle_tool_calls(response, channel_id, channel)
                 # Reschedule after proactive message so it can fire again
                 self._schedule_proactive(channel_id, channel)
             except Exception as exc:  # noqa: BLE001

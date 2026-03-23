@@ -93,13 +93,15 @@ class ProactiveService:
         messages = [{"role": "user", "content": full_prompt}]
 
         try:
-            reply = await asyncio.to_thread(self.reply_service.generate_reply, messages)
+            response = await asyncio.to_thread(self.reply_service.generate_reply_with_tools, messages)
         except Exception:
             return
 
-        reply = (reply or "").strip()
-        if not reply or "[SILENT]" in reply:
+        reply = (response.text or "").strip()
+        if not reply and not response.tool_calls:
+            return
+        if "[SILENT]" in reply:
             return
 
         # Send the proactive message and record it in history
-        await send_callback(reply)
+        await send_callback(reply, response)
