@@ -28,7 +28,7 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "reason": {
                     "type": "string",
-                    "description": "提醒内容。用户主动要求提醒时填写，AI 自己设的计时器不需要填。",
+                    "description": "提醒内容。仅当用户明确要求你提醒/闹钟时才填写，其他任何情况都不要填这个字段。",
                 },
             },
             "required": ["seconds"],
