@@ -236,7 +236,10 @@ class LLMClient:
         for line in resp.iter_lines(decode_unicode=True):
             if not line or not line.startswith("data: "):
                 continue
-            data = json.loads(line[6:])
+            try:
+                data = json.loads(line[6:])
+            except (json.JSONDecodeError, ValueError):
+                continue
             evt = data.get("type", "")
 
             if evt == "content_block_start":
@@ -278,7 +281,10 @@ class LLMClient:
             data_str = line[6:]
             if data_str.strip() == "[DONE]":
                 break
-            data = json.loads(data_str)
+            try:
+                data = json.loads(data_str)
+            except (json.JSONDecodeError, ValueError):
+                continue
             choices = data.get("choices") or []
             if not choices:
                 continue
