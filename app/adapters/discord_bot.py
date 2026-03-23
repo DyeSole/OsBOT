@@ -4,6 +4,7 @@ import asyncio
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from datetime import datetime, time as dt_time
 
 import discord
@@ -16,6 +17,15 @@ from app.infra.storage import ChatHistoryStore, CompressionStore
 from app.services.compression_service import CompressionService
 from app.services.context_builder import ContextBuilder
 from app.services.proactive_service import _load_proactive_prompt
+
+MORNING_PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts" / "morning.txt"
+
+
+def _load_morning_prompt() -> str:
+    try:
+        return MORNING_PROMPT_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "早安！新的一天开始了，跟用户打个招呼吧。"
 from app.services.prompt_service import PromptService
 from app.services.reply_service import ReplyService
 
@@ -621,6 +631,8 @@ class DiscordBot:
 
         # During quiet hours, discard proactive/variable timer fires silently
         if self._is_quiet_time():
+            self._quiet_channels.setdefault(channel_id, channel)
+            self._schedule_quiet_flush()
             self.logger.info(f"🤫 variable_timer_discarded_quiet channel={channel_id} seconds={seconds}")
             return
 
@@ -796,29 +808,35 @@ class DiscordBot:
         self._quiet_flush_task = asyncio.create_task(self._quiet_flush_fire(wait))
 
     async def _quiet_flush_fire(self, wait_seconds: float) -> None:
-        """Sleep until quiet hours end, then send one API request per channel with all buffered alarms."""
+        """Sleep until quiet hours end, then send a morning message per channel."""
         await asyncio.sleep(wait_seconds)
-        # Drain all buffered quiet-hour alarms
+        # Drain state
         buffered = dict(self._quiet_buffered_reasons)
         channels = dict(self._quiet_channels)
         self._quiet_buffered_reasons.clear()
         self._quiet_channels.clear()
 
-        for channel_id, reasons in buffered.items():
-            if not reasons:
-                continue
-            channel = channels.get(channel_id)
-            if channel is None:
-                continue
+        morning_prompt = _load_morning_prompt()
+        proactive_prompt = _load_proactive_prompt()
 
+        for channel_id, channel in channels.items():
             recent = self.history_store.load_all_entries(channel_id=channel_id)[-10:]
             history_block = self.history_store.render_entries(recent) if recent else ""
-            alarm_lines = "\n".join(f"- {r}" for r in reasons)
-            alarm_note = (
-                "[system: 静默时间已结束，以下闹钟在静默期间到期，你必须提醒用户这些事情，不可以沉默]\n"
-                f"{alarm_lines}"
-            )
-            transcript = f"{history_block}\n{alarm_note}".strip()
+
+            parts: list[str] = []
+            if history_block:
+                parts.append(history_block)
+            parts.append(f"[system: 静默时间已结束]\n{morning_prompt}")
+            # Attach buffered alarms if any
+            reasons = buffered.get(channel_id, [])
+            if reasons:
+                alarm_lines = "\n".join(f"- {r}" for r in reasons)
+                parts.append(
+                    "[system: 以下闹钟在静默期间到期，你必须提醒用户这些事情，不可以沉默]\n"
+                    f"{alarm_lines}"
+                )
+            parts.append(f"[system] {proactive_prompt}")
+            transcript = "\n".join(parts)
 
             messages = [{"role": "user", "content": transcript}]
             try:
@@ -839,9 +857,9 @@ class DiscordBot:
                         time=self._now_clock(),
                         content=reply,
                     )
-                    self.logger.info(f"🔔 quiet_flush_sent channel={channel_id} alarms={len(reasons)}")
+                    self.logger.info(f"🌅 morning_sent channel={channel_id} alarms={len(reasons)}")
                 except Exception as exc:  # noqa: BLE001
-                    self.logger.error("UNKNOWN", "failed to send quiet flush message", exc=exc)
+                    self.logger.error("UNKNOWN", "failed to send morning message", exc=exc)
 
             self._handle_tool_calls(response, channel_id, channel)
 
