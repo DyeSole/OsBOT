@@ -232,6 +232,8 @@ class DiscordBot:
         anchor_message: discord.Message | None,
         channel: discord.abc.Messageable,
         messages: list[dict[str, str]],
+        *,
+        include_tools: bool = False,
     ) -> LLMResponse:
         """Stream LLM response, sending each sentence to Discord as it completes."""
         from app.infra.llm_client import LLMResponse
@@ -242,6 +244,7 @@ class DiscordBot:
             try:
                 resp = self.reply_service.stream_reply_with_tools(
                     messages, lambda chunk: q.put(("text", chunk)),
+                    include_tools=include_tools,
                 )
                 q.put(("done", resp))
             except Exception as exc:  # noqa: BLE001
@@ -554,7 +557,9 @@ class DiscordBot:
         messages = [{"role": "user", "content": transcript}]
         try:
             async with channel.typing():
-                response = await asyncio.to_thread(self.reply_service.generate_reply_with_tools, messages)
+                response = await asyncio.to_thread(
+                    self.reply_service.generate_reply_with_tools, messages, include_tools=True,
+                )
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "variable timer api request failed", exc=exc)
             return
@@ -626,7 +631,9 @@ class DiscordBot:
         messages = [{"role": "user", "content": transcript}]
         try:
             async with channel.typing():
-                response = await asyncio.to_thread(self.reply_service.generate_reply_with_tools, messages)
+                response = await asyncio.to_thread(
+                    self.reply_service.generate_reply_with_tools, messages, include_tools=True,
+                )
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "alarm api request failed", exc=exc)
             return
@@ -736,7 +743,9 @@ class DiscordBot:
             messages = [{"role": "user", "content": transcript}]
             try:
                 async with channel.typing():
-                    response = await asyncio.to_thread(self.reply_service.generate_reply_with_tools, messages)
+                    response = await asyncio.to_thread(
+                    self.reply_service.generate_reply_with_tools, messages, include_tools=True,
+                )
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "quiet flush api request failed", exc=exc)
                 continue

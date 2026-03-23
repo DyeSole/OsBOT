@@ -73,20 +73,27 @@ class ReplyService:
 
         return self.client.generate(messages=messages, system_prompt=load_system_prompt())
 
-    def generate_reply_with_tools(self, messages: list[dict[str, str]]) -> LLMResponse:
+    def generate_reply_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        include_tools: bool = False,
+    ) -> LLMResponse:
         if not messages:
             return LLMResponse(text="哎，我字呢？")
 
         return self.client.generate_with_tools(
             messages=messages,
             system_prompt=load_system_prompt(),
-            tools=TOOLS,
+            tools=TOOLS if include_tools else [],
         )
 
     def stream_reply_with_tools(
         self,
         messages: list[dict[str, str]],
         on_text: Callable[[str], None],
+        *,
+        include_tools: bool = False,
     ) -> LLMResponse:
         if not messages:
             return LLMResponse(text="哎，我字呢？")
@@ -94,6 +101,6 @@ class ReplyService:
         return self.client.stream_with_tools(
             messages=messages,
             system_prompt=load_system_prompt(),
-            tools=TOOLS,
+            tools=TOOLS if include_tools else [],
             on_text=on_text,
         )
