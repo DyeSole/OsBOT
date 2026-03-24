@@ -602,10 +602,13 @@ class DiscordBot:
                 pass
 
         if results:
+            from urllib.parse import urlparse
             lines = [f"[搜索结果: {query}]"]
             for r in results:
-                lines.append(f"- {r['title']}\n  {r['body']}\n  {r['href']}")
+                source = urlparse(r['href']).netloc.removeprefix("www.") if r['href'] else "unknown"
+                lines.append(f"- [{source}] {r['title']}\n  {r['body']}\n  {r['href']}")
             search_block = "\n".join(lines)
+            search_block += "\n\n请根据以上搜索结果回答用户，引用相关来源。如果多个来源有不同说法，请分别说明。"
         else:
             search_block = f"[搜索结果: {query}]\n未找到相关结果。"
 
