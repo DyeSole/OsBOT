@@ -938,6 +938,16 @@ class DiscordBot:
         return batch
 
     async def _delete_messages(self, messages: list[discord.Message]) -> None:
+        if not messages:
+            return
+        channel = messages[0].channel
+        # bulk delete is much faster (one API call for up to 100 messages)
+        if hasattr(channel, "delete_messages") and len(messages) > 1:
+            try:
+                await channel.delete_messages(messages)  # type: ignore[union-attr]
+                return
+            except Exception:  # noqa: BLE001
+                pass  # fallback to one-by-one
         for msg in messages:
             try:
                 await msg.delete()
