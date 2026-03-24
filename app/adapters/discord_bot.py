@@ -1101,29 +1101,19 @@ class DiscordBot:
                 self._stop_typing_session(channel_id, user_id, reason="timeout")
 
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
-        """When a channel is deleted, clean up orphaned data files."""
-        self.logger.info(f"🗑️ channel_deleted id={channel.id} name={getattr(channel, 'name', '?')}")
-        await self._cleanup_orphaned_data()
+        """When a channel is deleted, clean up its data files.
 
-    async def _cleanup_orphaned_data(self) -> None:
-        """Remove history/memory for channels that no longer exist in any guild."""
-        all_guild_channel_ids: set[int] = set()
-        for guild in self.client.guilds:
-            for ch in guild.channels:
-                all_guild_channel_ids.add(ch.id)
-            for thread in guild.threads:
-                all_guild_channel_ids.add(thread.id)
-
-        stored_ids = self.history_store.all_channel_ids() | self.compression_store.all_channel_ids()
-        orphans = stored_ids - all_guild_channel_ids
-        if not orphans:
-            return
-
-        for cid in orphans:
-            h = self.history_store.delete_channel(cid)
-            m = self.compression_store.delete_channel(cid)
-            if h or m:
-                self.logger.info(f"🧹 cleaned_orphan channel_id={cid} history={h} memory={m}")
+        Only removes data for the specific deleted channel instead of doing a
+        full orphan sweep, because ``guild.threads`` only contains *cached
+        active* threads — archived / inactive threads would be mistakenly
+        treated as orphans and have their data deleted.
+        """
+        cid = channel.id
+        self.logger.info(f"🗑️ channel_deleted id={cid} name={getattr(channel, 'name', '?')}")
+        h = self.history_store.delete_channel(cid)
+        m = self.compression_store.delete_channel(cid)
+        if h or m:
+            self.logger.info(f"🧹 cleaned channel_id={cid} history={h} memory={m}")
 
     async def _collect_bot_reply_batch(
         self,
