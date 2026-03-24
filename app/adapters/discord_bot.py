@@ -561,6 +561,23 @@ class DiscordBot:
             except Exception:
                 await message.channel.send("我刚刚有点卡住了，等我一下再试试。")
 
+    def _process_timer_calls(
+        self,
+        tool_calls: list,
+        channel_id: int,
+        channel: discord.abc.Messageable,
+    ) -> None:
+        """Handle set_timer tool calls."""
+        for tc in tool_calls:
+            if tc.name == "set_timer":
+                seconds = tc.input.get("seconds", 0)
+                reason = tc.input.get("reason") or None
+                if isinstance(seconds, (int, float)) and seconds > 0:
+                    if reason:
+                        self._schedule_alarm(channel_id, channel, seconds, reason)
+                    else:
+                        self._schedule_variable_timer(channel_id, channel, seconds, source="llm")
+
     async def _handle_tool_calls(
         self,
         response,
@@ -572,16 +589,9 @@ class DiscordBot:
         edit_msg: discord.Message | None = None,
     ) -> None:
         """Process tool calls returned by the LLM."""
+        self._process_timer_calls(response.tool_calls, channel_id, channel)
         for tc in response.tool_calls:
-            if tc.name == "set_timer":
-                seconds = tc.input.get("seconds", 0)
-                reason = tc.input.get("reason") or None
-                if isinstance(seconds, (int, float)) and seconds > 0:
-                    if reason:
-                        self._schedule_alarm(channel_id, channel, seconds, reason)
-                    else:
-                        self._schedule_variable_timer(channel_id, channel, seconds, source="llm")
-            elif tc.name == "web_search":
+            if tc.name == "web_search":
                 query = tc.input.get("query", "")
                 if query:
                     if search_depth >= 3:
@@ -608,10 +618,8 @@ class DiscordBot:
         from app.infra.search_client import web_search
 
         self.logger.info(f"🔍 web_search query={query} depth={search_depth}")
-        # Build recent context: short hint for Grok, longer for main LLM
-        grok_recent = self.history_store.load_all_entries(channel_id=channel_id)[-10:]
-        context_hint = self.history_store.render_entries(grok_recent) if grok_recent else ""
-        recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
+        recent_entries = self.history_store.load_all_entries(channel_id=channel_id)
+        context_hint = self.history_store.render_entries(recent_entries[-10:]) if recent_entries else ""
         try:
             results = await asyncio.to_thread(
                 web_search,
@@ -638,7 +646,7 @@ class DiscordBot:
 
         # Build context for LLM: recent history + accumulated search results
         if search_depth == 0:
-            # First round: build fresh context from recent history
+            recent = recent_entries[-self.settings.context_entries:]
             recent_block = self.history_store.render_entries(recent) if recent else ""
             context_parts = [p for p in [recent_block, search_block] if p]
             messages = [{"role": "user", "content": "\n\n".join(context_parts)}]
@@ -674,16 +682,7 @@ class DiscordBot:
                     await edit_msg.edit(content=intermediate)
                 except Exception:  # noqa: BLE001
                     pass
-            # Handle non-search tool calls (e.g. set_timer) before continuing
-            for tc in search_response.tool_calls:
-                if tc.name == "set_timer":
-                    seconds = tc.input.get("seconds", 0)
-                    reason = tc.input.get("reason") or None
-                    if isinstance(seconds, (int, float)) and seconds > 0:
-                        if reason:
-                            self._schedule_alarm(channel_id, channel, seconds, reason)
-                        else:
-                            self._schedule_variable_timer(channel_id, channel, seconds, source="llm")
+            self._process_timer_calls(search_response.tool_calls, channel_id, channel)
             await self._execute_search(
                 next_search.input["query"], channel_id, channel, messages,
                 search_depth=next_depth, edit_msg=edit_msg,
@@ -696,14 +695,12 @@ class DiscordBot:
             try:
                 if edit_msg and len(reply) <= 2000:
                     await edit_msg.edit(content=reply)
-                elif edit_msg:
-                    # Reply too long for a single edit — delete placeholder and send split
-                    try:
-                        await edit_msg.delete()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    await self._reply_by_sentence(None, reply, channel=channel)
                 else:
+                    if edit_msg:
+                        try:
+                            await edit_msg.delete()
+                        except Exception:  # noqa: BLE001
+                            pass
                     await self._reply_by_sentence(None, reply, channel=channel)
                 self.history_store.append_entry(
                     channel_id=channel_id,
