@@ -77,6 +77,8 @@ class DiscordBot:
         intents.message_content = True
         intents.typing = True
         intents.reactions = True
+        intents.presences = True
+        intents.members = True
         self.client = discord.Client(intents=intents)
         self.tree = app_commands.CommandTree(self.client)
         self._commands_synced = False
