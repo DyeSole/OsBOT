@@ -558,6 +558,7 @@ class DiscordBot:
         channel: discord.abc.Messageable,
         *,
         prior_messages: list[dict[str, str]] | None = None,
+        search_depth: int = 0,
     ) -> None:
         """Process tool calls returned by the LLM."""
         for tc in response.tool_calls:
@@ -572,7 +573,10 @@ class DiscordBot:
             elif tc.name == "web_search":
                 query = tc.input.get("query", "")
                 if query:
-                    await self._execute_search(query, channel_id, channel, prior_messages)
+                    if search_depth >= 3:
+                        self.logger.info(f"🔍 search_depth_limit query={query} depth={search_depth}")
+                    else:
+                        await self._execute_search(query, channel_id, channel, prior_messages, search_depth=search_depth)
 
     async def _execute_search(
         self,
@@ -580,6 +584,8 @@ class DiscordBot:
         channel_id: int,
         channel: discord.abc.Messageable,
         prior_messages: list[dict[str, str]] | None = None,
+        *,
+        search_depth: int = 0,
     ) -> None:
         """Run a web search and feed results back to the LLM for a final reply."""
         from app.infra.search_client import web_search
@@ -638,7 +644,7 @@ class DiscordBot:
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send search reply", exc=exc)
 
-        await self._handle_tool_calls(search_response, channel_id, channel, prior_messages=messages)
+        await self._handle_tool_calls(search_response, channel_id, channel, prior_messages=messages, search_depth=search_depth + 1)
 
     def _schedule_variable_timer(
         self,
