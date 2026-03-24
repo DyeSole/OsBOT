@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from app.config.settings import Settings
-from app.infra.llm_client import LLMClient, LLMResponse
+from app.infra.llm_client import LLMClient, LLMResponse, VisionClient
 from app.services.prompt_service import PromptService
 
 # Available in normal conversation — only for user-requested alarms
@@ -102,6 +102,11 @@ class ReplyService:
             base_url=settings.base_url,
             api_key=settings.api_key,
             model=settings.model,
+        )
+        self.vision_client = VisionClient(
+            base_url=settings.vision_base_url,
+            api_key=settings.vision_api_key,
+            model=settings.vision_model,
         )
 
     def generate_reply(self, messages: list[dict[str, str]]) -> str:

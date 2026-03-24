@@ -1257,6 +1257,33 @@ class DiscordBot:
         self._pending_reactions.setdefault(channel_id, []).append(reaction_text)
         self._maybe_schedule_typing_nudge(channel_id, channel)
 
+    async def _describe_attachments(self, message: discord.Message) -> list[str]:
+        """Download image attachments and describe them via the vision model."""
+        vision = self.reply_service.vision_client
+        if not vision.available:
+            return []
+
+        IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+        descriptions: list[str] = []
+
+        for att in message.attachments:
+            ct = att.content_type or ""
+            # Normalize: "image/png; charset=utf-8" → "image/png"
+            media_type = ct.split(";")[0].strip().lower()
+            if media_type not in IMAGE_TYPES:
+                continue
+            try:
+                image_bytes = await att.read()
+                desc = await asyncio.get_event_loop().run_in_executor(
+                    None, vision.describe_image, image_bytes, media_type,
+                )
+                if desc:
+                    descriptions.append(f"[图片: {desc}]")
+            except Exception:
+                self.logger.error("VISION", f"failed to describe attachment {att.filename}")
+
+        return descriptions
+
     async def on_message(self, message: discord.Message) -> None:
         await self.reload_settings_if_needed()
         if message.author.bot:
@@ -1267,6 +1294,12 @@ class DiscordBot:
         if not text and message.stickers:
             names = "、".join(s.name for s in message.stickers)
             text = f"[贴纸: {names}]"
+
+        # Handle image attachments via vision model
+        image_descs = await self._describe_attachments(message)
+        if image_descs:
+            text = (text + "\n" if text else "") + "\n".join(image_descs)
+
         if not text:
             return
 

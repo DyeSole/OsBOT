@@ -54,6 +54,51 @@ class ApiConfigModal(discord.ui.Modal, title="编辑 API 配置"):
         )
 
 
+class VisionConfigModal(discord.ui.Modal, title="识图模型配置"):
+    def __init__(self, bot: DiscordBot):
+        super().__init__()
+        self.bot = bot
+        env_values = read_env_values()
+        current = bot.settings
+        self.vision_base_url = discord.ui.TextInput(
+            label="VISION_BASE_URL",
+            default=env_values.get("VISION_BASE_URL", current.vision_base_url),
+            required=False,
+            max_length=400,
+            placeholder="留空则不启用识图",
+        )
+        self.vision_api_key = discord.ui.TextInput(
+            label="VISION_API_KEY",
+            default=env_values.get("VISION_API_KEY", current.vision_api_key),
+            required=False,
+            max_length=400,
+            placeholder="可与主 API_KEY 相同",
+        )
+        self.vision_model = discord.ui.TextInput(
+            label="VISION_MODEL",
+            default=env_values.get("VISION_MODEL", current.vision_model),
+            required=False,
+            max_length=120,
+            placeholder="例如 claude-haiku-4-5-20251001",
+        )
+        self.add_item(self.vision_base_url)
+        self.add_item(self.vision_api_key)
+        self.add_item(self.vision_model)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        update_env_values(
+            {
+                "VISION_BASE_URL": self.vision_base_url.value.strip(),
+                "VISION_API_KEY": self.vision_api_key.value.strip(),
+                "VISION_MODEL": self.vision_model.value.strip(),
+            }
+        )
+        await interaction.response.edit_message(
+            content="工具箱\n\n识图模型配置已写入 .env，文件监听会自动生效。",
+            view=ToolboxView(self.bot),
+        )
+
+
 KINK_SEPARATOR = "\n---KINK---\n"
 
 
@@ -431,6 +476,10 @@ class ToolboxView(discord.ui.View):
     @discord.ui.button(label="API配置", style=discord.ButtonStyle.primary)
     async def api_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(ApiConfigModal(self.bot))
+
+    @discord.ui.button(label="识图配置", style=discord.ButtonStyle.primary)
+    async def vision_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(VisionConfigModal(self.bot))
 
     @discord.ui.button(label="主动消息", style=discord.ButtonStyle.primary)
     async def proactive(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import base64
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import requests
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -313,3 +317,116 @@ class LLMClient:
             tool_calls.append(ToolCall(name=v["name"], input=args))
 
         return LLMResponse(text="".join(text_parts).strip(), tool_calls=tool_calls)
+
+
+class VisionClient:
+    """Lightweight client that sends images to a vision model and returns text descriptions."""
+
+    ANTHROPIC_VERSION = "2023-06-01"
+    DESCRIBE_PROMPT = "请用简洁的中文描述这张图片的内容，包括画面中的主要元素、场景和氛围。"
+
+    def __init__(self, base_url: str, api_key: str, model: str):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.model = model
+
+    @property
+    def available(self) -> bool:
+        return bool(self.base_url and self.api_key and self.model)
+
+    def _is_anthropic(self) -> bool:
+        return self.base_url.endswith("/messages")
+
+    def _request_url(self) -> str:
+        if self._is_anthropic():
+            return self.base_url
+        if self.base_url.endswith("/chat/completions"):
+            return self.base_url
+        return f"{self.base_url}/chat/completions"
+
+    def _headers(self) -> dict[str, str]:
+        headers = {
+            "content-type": "application/json",
+            "authorization": f"Bearer {self.api_key}",
+            "x-api-key": self.api_key,
+        }
+        if self._is_anthropic():
+            headers["anthropic-version"] = self.ANTHROPIC_VERSION
+        return headers
+
+    def describe_image(self, image_bytes: bytes, media_type: str) -> str | None:
+        """Send an image to the vision model and return a text description.
+
+        Returns None on any failure so callers can gracefully skip.
+        """
+        if not self.available:
+            return None
+
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+
+        try:
+            if self._is_anthropic():
+                payload = {
+                    "model": self.model,
+                    "max_tokens": 300,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type,
+                                        "data": b64,
+                                    },
+                                },
+                                {"type": "text", "text": self.DESCRIBE_PROMPT},
+                            ],
+                        }
+                    ],
+                }
+            else:
+                data_url = f"data:{media_type};base64,{b64}"
+                payload = {
+                    "model": self.model,
+                    "max_tokens": 300,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": data_url},
+                                },
+                                {"type": "text", "text": self.DESCRIBE_PROMPT},
+                            ],
+                        }
+                    ],
+                }
+
+            resp = requests.post(
+                self._request_url(),
+                headers=self._headers(),
+                json=payload,
+                timeout=30,
+            )
+            if resp.status_code >= 400:
+                log.warning("vision api http %d: %s", resp.status_code, resp.text[:200])
+                return None
+
+            data = resp.json()
+
+            if self._is_anthropic():
+                content = data.get("content", [])
+                return LLMClient._extract_text_from_blocks(content) or None
+            else:
+                choices = data.get("choices") or []
+                if not choices:
+                    return None
+                msg = choices[0].get("message", {})
+                return LLMClient._extract_text_from_blocks(msg.get("content")) or None
+
+        except Exception:
+            log.exception("vision describe_image failed")
+            return None

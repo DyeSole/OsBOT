@@ -34,6 +34,9 @@ class Settings:
     quiet_start: str = ""   # e.g. "23:00"
     quiet_end: str = ""     # e.g. "07:00"
     watch_user_ids: list[str] = None  # up to 6 Discord user IDs to monitor presence
+    vision_base_url: str = ""
+    vision_api_key: str = ""
+    vision_model: str = ""
 
     def __post_init__(self) -> None:
         if self.watch_user_ids is None:
@@ -102,6 +105,10 @@ def load_settings() -> Settings:
     raw_watch = _env_value("WATCH_USER_IDS", env_file, "").strip()
     watch_user_ids = [uid.strip() for uid in raw_watch.split(",") if uid.strip()] if raw_watch else []
 
+    vision_base_url = _env_value("VISION_BASE_URL", env_file, "").strip()
+    vision_api_key = _env_value("VISION_API_KEY", env_file, "").strip()
+    vision_model = _env_value("VISION_MODEL", env_file, "").strip()
+
     return Settings(
         bot_key=bot_key,
         discord_bot_token=_env_value("DISCORD_BOT_TOKEN", env_file, "").strip(),
@@ -125,6 +132,9 @@ def load_settings() -> Settings:
         quiet_start=quiet_start,
         quiet_end=quiet_end,
         watch_user_ids=watch_user_ids,
+        vision_base_url=vision_base_url,
+        vision_api_key=vision_api_key,
+        vision_model=vision_model,
     )
 
 
@@ -159,6 +169,9 @@ def summarize_settings(settings: Settings) -> dict[str, Any]:
         "WATCH_USER_IDS": settings.watch_user_ids,
         "API_KEY_SET": bool(settings.api_key),
         "DISCORD_BOT_TOKEN_SET": bool(settings.discord_bot_token),
+        "VISION_BASE_URL": settings.vision_base_url,
+        "VISION_MODEL": settings.vision_model,
+        "VISION_API_KEY_SET": bool(settings.vision_api_key),
     }
 
 
