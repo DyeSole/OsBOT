@@ -583,11 +583,21 @@ class DiscordBot:
         from app.infra.search_client import web_search
 
         self.logger.info(f"🔍 web_search query={query}")
+        status_msg = None
+        try:
+            status_msg = await channel.send(f"正在搜索...")
+        except Exception:  # noqa: BLE001
+            pass
         try:
             results = await asyncio.to_thread(web_search, query)
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "web search failed", exc=exc)
             results = []
+        if status_msg:
+            try:
+                await status_msg.delete()
+            except Exception:  # noqa: BLE001
+                pass
 
         if results:
             lines = [f"[搜索结果: {query}]"]
