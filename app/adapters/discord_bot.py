@@ -424,7 +424,6 @@ class DiscordBot:
 
         merged_text = "\n".join([chunk for chunk in pending.chunks if chunk]).strip()
         if not merged_text:
-            self._log_typing(f"🔇 skip_empty_merged user={pending.user_label} ch={channel_id}")
             return
 
         pending_entry = {
@@ -439,7 +438,6 @@ class DiscordBot:
         )
         if not transcript:
             self.logger.error("LOGIC", "empty transcript, skip api request")
-            self._log_typing(f"🔇 skip_empty_transcript user={pending.user_label} ch={channel_id}")
             return
         self.history_store.append_entry(
             channel_id=channel_id,
@@ -473,7 +471,7 @@ class DiscordBot:
                     content=reply,
                 )
             else:
-                self._log_typing(f"🔇 api_empty_reply user={pending.user_label} ch={channel_id}")
+                self._log_typing(f"🔇 time_fire user={pending.user_label} ch={channel_id} reason=empty_reply")
             self._log_typing(
                 f"🚀 api_sent user={pending.user_label} chunks={len(pending.chunks)} merged_len={len(merged_text)}"
             )
@@ -511,7 +509,6 @@ class DiscordBot:
         )
         if not transcript:
             self.logger.error("LOGIC", "empty transcript, skip api request")
-            self._log_typing(f"🔇 skip_empty_transcript_immediate user={user_label} ch={channel_id}")
             return
         self.history_store.append_entry(
             channel_id=channel_id,
@@ -541,7 +538,7 @@ class DiscordBot:
                     content=reply,
                 )
             else:
-                self._log_typing(f"🔇 api_empty_reply_immediate user={user_label} ch={channel_id}")
+                self._log_typing(f"🔇 time_fire user={user_label} ch={channel_id} reason=empty_reply")
             self._handle_tool_calls(response, channel_id, message.channel)
             self._schedule_proactive(channel_id, message.channel)
         except Exception as exc:  # noqa: BLE001
@@ -674,7 +671,7 @@ class DiscordBot:
                 self.logger.error("UNKNOWN", "failed to send variable timer message", exc=exc)
         else:
             reason = "empty_reply" if not reply else "SILENT"
-            self._log_typing(f"🔇 timer_silent ch={channel_id} reason={reason} reply={reply!r}")
+            self._log_typing(f"🔇 time_fire ch={channel_id} reason={reason} reply={reply!r}")
 
         # Handle any new tool calls (e.g. AI sets another timer)
         self._handle_tool_calls(response, channel_id, channel)
@@ -1113,7 +1110,6 @@ class DiscordBot:
     async def on_message(self, message: discord.Message) -> None:
         await self.reload_settings_if_needed()
         if message.author.bot:
-            self._log_typing(f"🔇 skip_bot_message user={message.author} ch={message.channel.id}")
             return
 
         text = (message.content or "").strip()
@@ -1122,7 +1118,6 @@ class DiscordBot:
             names = "、".join(s.name for s in message.stickers)
             text = f"[贴纸: {names}]"
         if not text:
-            self._log_typing(f"🔇 skip_empty_message user={self._user_label(message.author)} ch={message.channel.id}")
             return
 
         # Prepend quoted message content when user replies to a message
