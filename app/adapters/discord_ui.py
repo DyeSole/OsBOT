@@ -353,6 +353,35 @@ class WatchUsersModal(discord.ui.Modal, title="监听用户上线"):
         )
 
 
+class JealousyChannelsModal(discord.ui.Modal, title="频道偷窥"):
+    def __init__(self, bot: DiscordBot):
+        super().__init__()
+        self.bot = bot
+        ids = bot.settings.jealousy_channel_ids
+        padded = (ids + [""] * 5)[:5]
+        self.slots: list[discord.ui.TextInput] = []
+        for i in range(5):
+            inp = discord.ui.TextInput(
+                label=f"频道 ID {i + 1}",
+                default=padded[i],
+                required=False,
+                max_length=25,
+                placeholder="Discord Channel ID",
+            )
+            self.slots.append(inp)
+            self.add_item(inp)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        ids = [s.value.strip() for s in self.slots if s.value.strip()]
+        update_env_values({"JEALOUSY_CHANNEL_IDS": ",".join(ids)})
+        await self.bot.reload_settings_if_needed()
+        id_list = "\n".join(f"  {cid}" for cid in ids) if ids else "  （无）"
+        await interaction.response.edit_message(
+            content=f"主动消息\n\n偷窥频道已更新：\n{id_list}",
+            view=ProactiveToolboxView(self.bot),
+        )
+
+
 class TypingNudgeModal(discord.ui.Modal, title="表情|打字 设置"):
     def __init__(self, bot: DiscordBot):
         super().__init__()
@@ -463,6 +492,10 @@ class ProactiveToolboxView(discord.ui.View):
     @discord.ui.button(label="监听上线", style=discord.ButtonStyle.primary)
     async def watch_users(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(WatchUsersModal(self.bot))
+
+    @discord.ui.button(label="频道偷窥", style=discord.ButtonStyle.primary)
+    async def jealousy_channels(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(JealousyChannelsModal(self.bot))
 
     @discord.ui.button(label="表情|打字", style=discord.ButtonStyle.secondary)
     async def typing_nudge(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
