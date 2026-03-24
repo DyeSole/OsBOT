@@ -1559,6 +1559,8 @@ class DiscordBot:
 
         self._stop_typing_session(message.channel.id, message.author.id, reason="message")
         self._typing_nudge_channels.discard(message.channel.id)
+        # Jealousy: also check on message (threads don't fire on_typing)
+        self._check_jealousy(message.channel, message.author)
         # Cancel watch-online timer — user spoke
         self._cancel_watch_timer(message.author.id)
         # Cancel variable/proactive timer — user is active
