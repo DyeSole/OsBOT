@@ -86,7 +86,8 @@ class DiscordBot:
 
         self._watch_previous_status: dict[int, str] = {}  # user_id -> previous status
         self._watch_online_timers: dict[int, asyncio.Task] = {}  # user_id -> pending timer
-        self._jealousy_cooldowns: dict[int, float] = {}  # user_id -> last jealousy trigger time
+        self._jealousy_counts: dict[int, int] = {}  # user_id -> accumulated typing count
+        self._jealousy_timers: dict[int, asyncio.Task] = {}  # user_id -> pending fire task
 
         self.client.event(self.on_ready)
         self.client.event(self.on_message)
@@ -1234,7 +1235,7 @@ class DiscordBot:
         self._check_jealousy(channel, user)
 
     def _check_jealousy(self, channel: discord.abc.Messageable, user: discord.User) -> None:
-        """If the user is typing in a jealousy-monitored channel, trigger a jealous response."""
+        """If the user is typing in a jealousy-monitored channel, accumulate count and schedule fire."""
         if not self.settings.jealousy_channel_ids:
             return
         uid_str = str(user.id)
@@ -1242,31 +1243,42 @@ class DiscordBot:
             return
         if str(channel.id) not in self.settings.jealousy_channel_ids:
             return
-        # Cooldown: at most once per 10 minutes per user
-        now = time.monotonic()
-        last = self._jealousy_cooldowns.get(user.id, 0.0)
-        if now - last < 600:
-            return
-        self._jealousy_cooldowns[user.id] = now
-        # Find the bot's own channel with this user to send the jealous message
         guild = getattr(channel, "guild", None)
         if guild is None:
             return
         bot_channel = self._find_channel_for_user(user.id, guild)
         if bot_channel is None or bot_channel.id == channel.id:
             return
-        self.logger.info(f"💚 jealousy user={uid_str} typing_in={channel.id} reply_in={bot_channel.id}")
-        asyncio.create_task(self._jealousy_fire(user.id, bot_channel))
+        # Increment typing count
+        self._jealousy_counts[user.id] = self._jealousy_counts.get(user.id, 0) + 1
+        count = self._jealousy_counts[user.id]
+        self.logger.info(f"💚 jealousy_tick user={uid_str} count={count}")
+        # Schedule fire if not already pending
+        if user.id not in self._jealousy_timers:
+            self._jealousy_timers[user.id] = asyncio.create_task(
+                self._jealousy_delayed_fire(user.id, bot_channel)
+            )
 
-    async def _jealousy_fire(self, user_id: int, channel: discord.abc.Messageable) -> None:
-        """Send a jealous message when the watched user is chatting in another channel."""
+    async def _jealousy_delayed_fire(self, user_id: int, channel: discord.abc.Messageable) -> None:
+        """Wait 10 minutes, then send accumulated typing count to the LLM."""
+        await asyncio.sleep(600)
+        self._jealousy_timers.pop(user_id, None)
+        count = self._jealousy_counts.pop(user_id, 0)
+        if count == 0:
+            return
         channel_id = channel.id
         if self._is_quiet_time():
-            self.logger.info(f"💚 jealousy_suppressed user={user_id} quiet_hours")
+            self.logger.info(f"💚 jealousy_suppressed user={user_id} quiet_hours count={count}")
             return
+        self.logger.info(f"💚 jealousy_fire user={user_id} ch={channel_id} count={count}")
         recent = self.history_store.load_all_entries(channel_id=channel_id)[-20:]
         transcript = self.history_store.render_entries(recent) if recent else ""
-        jealousy_note = "[系统提示] 你发现用户正在别的频道跟别人聊天。你可以自然地表达你的感受，比如吃醋、委屈、或者撒娇，但不要太过分。注意要符合你的人设，不要让对方觉得你在监视。"
+        jealousy_note = (
+            f"[系统提示] 在过去十分钟里，你发现用户在别的频道跟别人聊天，"
+            f"一共捕捉到{count}次打字。次数越多说明聊得越起劲。"
+            f"你可以自然地表达你的感受，比如吃醋、委屈、或者撒娇，但不要太过分。"
+            f"注意要符合你的人设，不要让对方觉得你在监视。"
+        )
         if transcript:
             transcript = f"{transcript}\n{jealousy_note}"
         else:
@@ -1291,7 +1303,7 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-                self.logger.info(f"💚 jealousy_sent user={user_id} ch={channel_id}")
+                self.logger.info(f"💚 jealousy_sent user={user_id} ch={channel_id} count={count}")
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send jealousy message", exc=exc)
         await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
