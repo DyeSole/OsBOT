@@ -255,8 +255,11 @@ class DiscordBot:
         messages: list[dict[str, str]],
         *,
         include_tools: bool = False,
-    ) -> LLMResponse:
-        """Stream LLM response, sending each sentence to Discord as it completes."""
+    ) -> tuple[LLMResponse, list[discord.Message]]:
+        """Stream LLM response, sending each sentence to Discord as it completes.
+
+        Returns (LLMResponse, list_of_sent_discord_messages).
+        """
         from app.infra.llm_client import LLMResponse
 
         q: _queue.Queue[tuple[str, object]] = _queue.Queue()
@@ -276,6 +279,7 @@ class DiscordBot:
 
         buffer = ""
         is_first = True
+        sent_msgs: list[discord.Message] = []
 
         while True:
             try:
@@ -295,14 +299,15 @@ class DiscordBot:
                                 async with channel.typing():
                                     await asyncio.sleep(delay)
                             if is_first and anchor_message is not None:
-                                await anchor_message.reply(
+                                msg = await anchor_message.reply(
                                     s, mention_author=False,
                                     allowed_mentions=AllowedMentions.none(),
                                 )
                             else:
-                                await channel.send(
+                                msg = await channel.send(
                                     s, allowed_mentions=AllowedMentions.none(),
                                 )
+                            sent_msgs.append(msg)
                             is_first = False
                         buffer = parts[-1]
             elif kind == "done":
@@ -311,19 +316,20 @@ class DiscordBot:
                         async with channel.typing():
                             await asyncio.sleep(self.settings.chat_reply_delay_seconds)
                     if is_first and anchor_message is not None:
-                        await anchor_message.reply(
+                        msg = await anchor_message.reply(
                             buffer.strip(), mention_author=False,
                             allowed_mentions=AllowedMentions.none(),
                         )
                     else:
-                        await channel.send(
+                        msg = await channel.send(
                             buffer.strip(), allowed_mentions=AllowedMentions.none(),
                         )
-                return value  # type: ignore[return-value]
+                    sent_msgs.append(msg)
+                return value, sent_msgs  # type: ignore[return-value]
             elif kind == "error":
                 raise value  # type: ignore[misc]
 
-        return LLMResponse(text="")  # unreachable
+        return LLMResponse(text=""), sent_msgs  # unreachable
 
     @staticmethod
     def _channel_label(channel) -> str:  # type: ignore[no-untyped-def]
@@ -461,11 +467,12 @@ class DiscordBot:
 
         try:
             await pending.channel.typing()
-            response = await self._stream_and_send(
+            response, sent_msgs = await self._stream_and_send(
                 pending.anchor_message, pending.channel, messages,
             )
             reply = (response.text or "").strip()
-            if reply:
+            has_search = any(tc.name == "web_search" for tc in response.tool_calls)
+            if reply and not has_search:
                 self.history_store.append_entry(
                     channel_id=channel_id,
                     role="assistant",
@@ -477,7 +484,8 @@ class DiscordBot:
                 f"🚀 api_sent user={pending.user_label} chunks={len(pending.chunks)} merged_len={len(merged_text)}"
             )
             # Handle tool calls from LLM
-            await self._handle_tool_calls(response, channel_id, pending.channel, prior_messages=messages)
+            edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
+            await self._handle_tool_calls(response, channel_id, pending.channel, prior_messages=messages, edit_msg=edit_msg)
             # Start proactive idle timer after bot replies
             self._schedule_proactive(channel_id, pending.channel)
         except Exception as exc:  # noqa: BLE001
@@ -526,11 +534,12 @@ class DiscordBot:
 
         try:
             await message.channel.typing()
-            response = await self._stream_and_send(
+            response, sent_msgs = await self._stream_and_send(
                 message, message.channel, messages,
             )
             reply = (response.text or "").strip()
-            if reply:
+            has_search = any(tc.name == "web_search" for tc in response.tool_calls)
+            if reply and not has_search:
                 self.history_store.append_entry(
                     channel_id=channel_id,
                     role="assistant",
@@ -538,7 +547,8 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-            await self._handle_tool_calls(response, channel_id, message.channel, prior_messages=messages)
+            edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
+            await self._handle_tool_calls(response, channel_id, message.channel, prior_messages=messages, edit_msg=edit_msg)
             self._schedule_proactive(channel_id, message.channel)
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "failed to send reply", exc=exc)
@@ -559,6 +569,7 @@ class DiscordBot:
         *,
         prior_messages: list[dict[str, str]] | None = None,
         search_depth: int = 0,
+        edit_msg: discord.Message | None = None,
     ) -> None:
         """Process tool calls returned by the LLM."""
         for tc in response.tool_calls:
@@ -576,7 +587,7 @@ class DiscordBot:
                     if search_depth >= 3:
                         self.logger.info(f"🔍 search_depth_limit query={query} depth={search_depth}")
                     else:
-                        await self._execute_search(query, channel_id, channel, prior_messages, search_depth=search_depth)
+                        await self._execute_search(query, channel_id, channel, prior_messages, search_depth=search_depth, edit_msg=edit_msg)
 
     async def _execute_search(
         self,
@@ -586,17 +597,17 @@ class DiscordBot:
         prior_messages: list[dict[str, str]] | None = None,
         *,
         search_depth: int = 0,
+        edit_msg: discord.Message | None = None,
     ) -> None:
-        """Run a web search and feed results back to the LLM for a final reply."""
+        """Run a web search and feed results back to the LLM for a final reply.
+
+        If edit_msg is provided, intermediate/final replies are edited onto that
+        message instead of sending new messages.  Only the final result is saved
+        to history.
+        """
         from app.infra.search_client import web_search
 
         self.logger.info(f"🔍 web_search query={query} depth={search_depth}")
-        status_msg = None
-        if search_depth == 0:
-            try:
-                status_msg = await channel.send("正在搜索...")
-            except Exception:  # noqa: BLE001
-                pass
         try:
             results = await asyncio.to_thread(
                 web_search,
@@ -608,11 +619,6 @@ class DiscordBot:
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "web search failed", exc=exc)
             results = []
-        if status_msg:
-            try:
-                await status_msg.delete()
-            except Exception:  # noqa: BLE001
-                pass
 
         if results:
             from urllib.parse import urlparse
@@ -640,13 +646,20 @@ class DiscordBot:
             self.logger.error("UNKNOWN", "search follow-up api request failed", exc=exc)
             return
 
-        # If LLM issued another web_search, don't reply yet — recurse with accumulated context
+        # If LLM issued another web_search, edit intermediate text onto edit_msg and recurse
         next_search = next(
             (tc for tc in search_response.tool_calls if tc.name == "web_search" and tc.input.get("query")),
             None,
         )
         if next_search and next_depth < 3:
             self.logger.info(f"🔍 search_continue depth={next_depth} next_query={next_search.input['query']}")
+            # Edit intermediate text onto edit_msg (e.g. "再确认一下...")
+            intermediate = (search_response.text or "").strip()
+            if intermediate and edit_msg:
+                try:
+                    await edit_msg.edit(content=intermediate)
+                except Exception:  # noqa: BLE001
+                    pass
             # Handle non-search tool calls (e.g. set_timer) before continuing
             for tc in search_response.tool_calls:
                 if tc.name == "set_timer":
@@ -658,15 +671,19 @@ class DiscordBot:
                         else:
                             self._schedule_variable_timer(channel_id, channel, seconds, source="llm")
             await self._execute_search(
-                next_search.input["query"], channel_id, channel, messages, search_depth=next_depth,
+                next_search.input["query"], channel_id, channel, messages,
+                search_depth=next_depth, edit_msg=edit_msg,
             )
             return
 
-        # Final round — send reply
+        # Final round — edit the result onto edit_msg, or send new if no edit_msg
         reply = (search_response.text or "").strip()
         if reply:
             try:
-                await self._reply_by_sentence(None, reply, channel=channel)
+                if edit_msg:
+                    await edit_msg.edit(content=reply)
+                else:
+                    await self._reply_by_sentence(None, reply, channel=channel)
                 self.history_store.append_entry(
                     channel_id=channel_id,
                     role="assistant",
@@ -1087,11 +1104,12 @@ class DiscordBot:
         messages = [{"role": "user", "content": transcript}]
         try:
             async with channel.typing():
-                response = await self._stream_and_send(
+                response, sent_msgs = await self._stream_and_send(
                     None, channel, messages,
                 )
             reply = (response.text or "").strip()
-            if reply:
+            has_search = any(tc.name == "web_search" for tc in response.tool_calls)
+            if reply and not has_search:
                 self.history_store.append_entry(
                     channel_id=channel_id,
                     role="assistant",
@@ -1099,7 +1117,8 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-            await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
+            edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
+            await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages, edit_msg=edit_msg)
             self._schedule_proactive(channel_id, channel)
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "regenerate reply failed", exc=exc)
