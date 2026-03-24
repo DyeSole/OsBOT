@@ -34,6 +34,7 @@ class Settings:
     quiet_start: str = ""   # e.g. "23:00"
     quiet_end: str = ""     # e.g. "07:00"
     watch_user_ids: list[str] = None  # up to 6 Discord user IDs to monitor presence
+    jealousy_channel_ids: list[str] = None  # channel IDs where typing triggers jealousy
     vision_base_url: str = ""
     vision_api_key: str = ""
     vision_model: str = ""
@@ -41,6 +42,8 @@ class Settings:
     def __post_init__(self) -> None:
         if self.watch_user_ids is None:
             self.watch_user_ids = []
+        if self.jealousy_channel_ids is None:
+            self.jealousy_channel_ids = []
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -104,6 +107,8 @@ def load_settings() -> Settings:
     quiet_end = _env_value("QUIET_END", env_file, "").strip()
     raw_watch = _env_value("WATCH_USER_IDS", env_file, "").strip()
     watch_user_ids = [uid.strip() for uid in raw_watch.split(",") if uid.strip()] if raw_watch else []
+    raw_jealousy = _env_value("JEALOUSY_CHANNEL_IDS", env_file, "").strip()
+    jealousy_channel_ids = [cid.strip() for cid in raw_jealousy.split(",") if cid.strip()] if raw_jealousy else []
 
     vision_base_url = _env_value("VISION_BASE_URL", env_file, "").strip()
     vision_api_key = _env_value("VISION_API_KEY", env_file, "").strip()
@@ -132,6 +137,7 @@ def load_settings() -> Settings:
         quiet_start=quiet_start,
         quiet_end=quiet_end,
         watch_user_ids=watch_user_ids,
+        jealousy_channel_ids=jealousy_channel_ids,
         vision_base_url=vision_base_url,
         vision_api_key=vision_api_key,
         vision_model=vision_model,
@@ -167,6 +173,7 @@ def summarize_settings(settings: Settings) -> dict[str, Any]:
         "QUIET_START": settings.quiet_start,
         "QUIET_END": settings.quiet_end,
         "WATCH_USER_IDS": settings.watch_user_ids,
+        "JEALOUSY_CHANNEL_IDS": settings.jealousy_channel_ids,
         "API_KEY_SET": bool(settings.api_key),
         "DISCORD_BOT_TOKEN_SET": bool(settings.discord_bot_token),
         "VISION_BASE_URL": settings.vision_base_url,

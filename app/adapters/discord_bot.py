@@ -86,6 +86,7 @@ class DiscordBot:
 
         self._watch_previous_status: dict[int, str] = {}  # user_id -> previous status
         self._watch_online_timers: dict[int, asyncio.Task] = {}  # user_id -> pending timer
+        self._jealousy_cooldowns: dict[int, float] = {}  # user_id -> last jealousy trigger time
 
         self.client.event(self.on_ready)
         self.client.event(self.on_message)
@@ -1228,6 +1229,72 @@ class DiscordBot:
 
         if is_new:
             self._maybe_schedule_typing_nudge(channel.id, channel)
+
+        # Jealousy: user typing in a monitored channel
+        self._check_jealousy(channel, user)
+
+    def _check_jealousy(self, channel: discord.abc.Messageable, user: discord.User) -> None:
+        """If the user is typing in a jealousy-monitored channel, trigger a jealous response."""
+        if not self.settings.jealousy_channel_ids:
+            return
+        uid_str = str(user.id)
+        if uid_str not in self.settings.watch_user_ids:
+            return
+        if str(channel.id) not in self.settings.jealousy_channel_ids:
+            return
+        # Cooldown: at most once per 10 minutes per user
+        now = time.monotonic()
+        last = self._jealousy_cooldowns.get(user.id, 0.0)
+        if now - last < 600:
+            return
+        self._jealousy_cooldowns[user.id] = now
+        # Find the bot's own channel with this user to send the jealous message
+        guild = getattr(channel, "guild", None)
+        if guild is None:
+            return
+        bot_channel = self._find_channel_for_user(user.id, guild)
+        if bot_channel is None or bot_channel.id == channel.id:
+            return
+        self.logger.info(f"💚 jealousy user={uid_str} typing_in={channel.id} reply_in={bot_channel.id}")
+        asyncio.create_task(self._jealousy_fire(user.id, bot_channel))
+
+    async def _jealousy_fire(self, user_id: int, channel: discord.abc.Messageable) -> None:
+        """Send a jealous message when the watched user is chatting in another channel."""
+        channel_id = channel.id
+        if self._is_quiet_time():
+            self.logger.info(f"💚 jealousy_suppressed user={user_id} quiet_hours")
+            return
+        recent = self.history_store.load_all_entries(channel_id=channel_id)[-20:]
+        transcript = self.history_store.render_entries(recent) if recent else ""
+        jealousy_note = "[系统提示] 你发现用户正在别的频道跟别人聊天。你可以自然地表达你的感受，比如吃醋、委屈、或者撒娇，但不要太过分。注意要符合你的人设，不要让对方觉得你在监视。"
+        if transcript:
+            transcript = f"{transcript}\n{jealousy_note}"
+        else:
+            transcript = jealousy_note
+        messages = [{"role": "user", "content": transcript}]
+        try:
+            async with channel.typing():
+                response = await asyncio.to_thread(
+                    self.reply_service.generate_reply_with_tools, messages, include_tools=True,
+                )
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("UNKNOWN", "jealousy api request failed", exc=exc)
+            return
+        reply = (response.text or "").strip()
+        if reply and "[SILENT]" not in reply:
+            try:
+                await self._reply_by_sentence(None, reply, channel=channel)
+                self.history_store.append_entry(
+                    channel_id=channel_id,
+                    role="assistant",
+                    username=self.settings.bot_key,
+                    time=self._now_clock(),
+                    content=reply,
+                )
+                self.logger.info(f"💚 jealousy_sent user={user_id} ch={channel_id}")
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("UNKNOWN", "failed to send jealousy message", exc=exc)
+        await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
 
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
         if payload.user_id == self.client.user.id:  # type: ignore[union-attr]
