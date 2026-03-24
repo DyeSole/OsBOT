@@ -1,13 +1,27 @@
 from __future__ import annotations
 
+import json
+import re
+
 from duckduckgo_search import DDGS
+from openai import OpenAI
 
 
-def web_search(query: str, *, max_results: int = 5) -> list[dict[str, str]]:
-    """Search the web via DuckDuckGo and return a list of results.
+def web_search(
+    query: str,
+    *,
+    max_results: int = 5,
+    base_url: str = "",
+    api_key: str = "",
+    model: str = "",
+) -> list[dict[str, str]]:
+    """Search the web. Uses Grok/xAI if configured, otherwise DuckDuckGo."""
+    if base_url and api_key:
+        return _grok_search(query, base_url=base_url, api_key=api_key, model=model, max_results=max_results)
+    return _ddg_search(query, max_results=max_results)
 
-    Each result dict has keys: title, href, body.
-    """
+
+def _ddg_search(query: str, *, max_results: int = 5) -> list[dict[str, str]]:
     with DDGS() as ddgs:
         raw = list(ddgs.text(query, max_results=max_results))
     return [
@@ -18,3 +32,51 @@ def web_search(query: str, *, max_results: int = 5) -> list[dict[str, str]]:
         }
         for r in raw
     ]
+
+
+def _grok_search(
+    query: str,
+    *,
+    base_url: str,
+    api_key: str,
+    model: str = "",
+    max_results: int = 5,
+) -> list[dict[str, str]]:
+    """Use Grok/xAI API with web search to get results."""
+    client = OpenAI(base_url=base_url, api_key=api_key)
+    use_model = model or "grok-3-mini-fast"
+
+    response = client.chat.completions.create(
+        model=use_model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    f"你是一个搜索助手。请根据用户的搜索关键词进行联网搜索，返回最多{max_results}条结果。"
+                    "必须严格按以下JSON格式返回，不要包含其他内容：\n"
+                    '[{"title": "标题", "href": "链接URL", "body": "摘要"}]'
+                ),
+            },
+            {"role": "user", "content": query},
+        ],
+        search_mode="auto",
+    )
+
+    text = (response.choices[0].message.content or "").strip()
+    # Extract JSON array from response
+    match = re.search(r"\[.*\]", text, re.DOTALL)
+    if not match:
+        return []
+    try:
+        items = json.loads(match.group())
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return [
+        {
+            "title": str(item.get("title", "")),
+            "href": str(item.get("href", "")),
+            "body": str(item.get("body", "")),
+        }
+        for item in items
+        if isinstance(item, dict)
+    ][:max_results]

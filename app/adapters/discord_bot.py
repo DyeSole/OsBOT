@@ -598,7 +598,13 @@ class DiscordBot:
             except Exception:  # noqa: BLE001
                 pass
         try:
-            results = await asyncio.to_thread(web_search, query)
+            results = await asyncio.to_thread(
+                web_search,
+                query,
+                base_url=self.settings.search_base_url,
+                api_key=self.settings.search_api_key,
+                model=self.settings.search_model,
+            )
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "web search failed", exc=exc)
             results = []

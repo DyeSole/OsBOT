@@ -99,6 +99,51 @@ class VisionConfigModal(discord.ui.Modal, title="识图 API 配置"):
         )
 
 
+class SearchConfigModal(discord.ui.Modal, title="搜索 API 配置"):
+    def __init__(self, bot: DiscordBot):
+        super().__init__()
+        self.bot = bot
+        env_values = read_env_values()
+        current = bot.settings
+        self.search_base_url = discord.ui.TextInput(
+            label="SEARCH_BASE_URL",
+            default=env_values.get("SEARCH_BASE_URL", current.search_base_url),
+            required=False,
+            max_length=400,
+            placeholder="留空则使用 DuckDuckGo",
+        )
+        self.search_api_key = discord.ui.TextInput(
+            label="SEARCH_API_KEY",
+            default=env_values.get("SEARCH_API_KEY", current.search_api_key),
+            required=False,
+            max_length=400,
+            placeholder="留空则使用 DuckDuckGo",
+        )
+        self.search_model = discord.ui.TextInput(
+            label="SEARCH_MODEL",
+            default=env_values.get("SEARCH_MODEL", current.search_model),
+            required=False,
+            max_length=120,
+            placeholder="留空默认 grok-3-mini-fast",
+        )
+        self.add_item(self.search_base_url)
+        self.add_item(self.search_api_key)
+        self.add_item(self.search_model)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        update_env_values(
+            {
+                "SEARCH_BASE_URL": self.search_base_url.value.strip(),
+                "SEARCH_API_KEY": self.search_api_key.value.strip(),
+                "SEARCH_MODEL": self.search_model.value.strip(),
+            }
+        )
+        await interaction.response.edit_message(
+            content="API 配置\n\n搜索 API 配置已写入 .env，文件监听会自动生效。",
+            view=ApiToolboxView(self.bot),
+        )
+
+
 KINK_SEPARATOR = "\n---KINK---\n"
 
 
@@ -352,6 +397,10 @@ class ApiToolboxView(discord.ui.View):
     @discord.ui.button(label="识图 API", style=discord.ButtonStyle.primary)
     async def vision_api(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(VisionConfigModal(self.bot))
+
+    @discord.ui.button(label="搜索 API", style=discord.ButtonStyle.primary)
+    async def search_api(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(SearchConfigModal(self.bot))
 
     @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

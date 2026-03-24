@@ -36,6 +36,9 @@ class Settings:
     watch_user_ids: list[str] = None  # up to 6 Discord user IDs to monitor presence
     jealousy_channel_ids: list[str] = None  # channel IDs where typing triggers jealousy
     context_entries: int = 20  # number of recent history entries for proactive/alarm/jealousy contexts
+    search_base_url: str = ""  # Grok/xAI API base URL for web search (empty = DuckDuckGo)
+    search_api_key: str = ""
+    search_model: str = ""
     vision_base_url: str = ""
     vision_api_key: str = ""
     vision_model: str = ""
@@ -113,6 +116,10 @@ def load_settings() -> Settings:
 
     context_entries = int(_env_value("CONTEXT_ENTRIES", env_file, "20").strip() or "20")
 
+    search_base_url = _env_value("SEARCH_BASE_URL", env_file, "").strip()
+    search_api_key = _env_value("SEARCH_API_KEY", env_file, "").strip()
+    search_model = _env_value("SEARCH_MODEL", env_file, "").strip()
+
     vision_base_url = _env_value("VISION_BASE_URL", env_file, "").strip()
     vision_api_key = _env_value("VISION_API_KEY", env_file, "").strip()
     vision_model = _env_value("VISION_MODEL", env_file, "").strip()
@@ -142,6 +149,9 @@ def load_settings() -> Settings:
         quiet_end=quiet_end,
         watch_user_ids=watch_user_ids,
         jealousy_channel_ids=jealousy_channel_ids,
+        search_base_url=search_base_url,
+        search_api_key=search_api_key,
+        search_model=search_model,
         vision_base_url=vision_base_url,
         vision_api_key=vision_api_key,
         vision_model=vision_model,
@@ -181,6 +191,9 @@ def summarize_settings(settings: Settings) -> dict[str, Any]:
         "JEALOUSY_CHANNEL_IDS": settings.jealousy_channel_ids,
         "API_KEY_SET": bool(settings.api_key),
         "DISCORD_BOT_TOKEN_SET": bool(settings.discord_bot_token),
+        "SEARCH_BASE_URL": settings.search_base_url,
+        "SEARCH_MODEL": settings.search_model,
+        "SEARCH_API_KEY_SET": bool(settings.search_api_key),
         "VISION_BASE_URL": settings.vision_base_url,
         "VISION_MODEL": settings.vision_model,
         "VISION_API_KEY_SET": bool(settings.vision_api_key),
