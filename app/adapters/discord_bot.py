@@ -391,13 +391,6 @@ class DiscordBot:
         )
         if opened:
             pending.task = asyncio.create_task(self._dispatch_after_idle(channel_id, user_id))
-            self._log_typing(
-                f"🧠🧠 buffer_open user={user_label}"
-            )
-            return
-        self._log_typing(
-            f"🧠 buffer_merge user={user_label} chunks={len(pending.chunks)}"
-        )
 
     async def _dispatch_after_idle(self, channel_id: int, user_id: int) -> None:
         while True:
@@ -470,8 +463,6 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-            else:
-                self._log_typing(f"🔇 time_fire ch={channel_id}")
             self._log_typing(
                 f"🚀 api_sent user={pending.user_label} chunks={len(pending.chunks)} merged_len={len(merged_text)}"
             )
@@ -537,8 +528,6 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-            else:
-                self._log_typing(f"🔇 time_fire ch={channel_id}")
             self._handle_tool_calls(response, channel_id, message.channel)
             self._schedule_proactive(channel_id, message.channel)
         except Exception as exc:  # noqa: BLE001
