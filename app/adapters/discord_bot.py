@@ -471,7 +471,7 @@ class DiscordBot:
                     content=reply,
                 )
             else:
-                self._log_typing(f"🔇 time_fire user={pending.user_label} ch={channel_id} reason=empty_reply")
+                self._log_typing(f"🔇 time_fire ch={channel_id}")
             self._log_typing(
                 f"🚀 api_sent user={pending.user_label} chunks={len(pending.chunks)} merged_len={len(merged_text)}"
             )
@@ -538,7 +538,7 @@ class DiscordBot:
                     content=reply,
                 )
             else:
-                self._log_typing(f"🔇 time_fire user={user_label} ch={channel_id} reason=empty_reply")
+                self._log_typing(f"🔇 time_fire ch={channel_id}")
             self._handle_tool_calls(response, channel_id, message.channel)
             self._schedule_proactive(channel_id, message.channel)
         except Exception as exc:  # noqa: BLE001
@@ -671,7 +671,7 @@ class DiscordBot:
                 self.logger.error("UNKNOWN", "failed to send variable timer message", exc=exc)
         else:
             reason = "empty_reply" if not reply else "SILENT"
-            self._log_typing(f"🔇 time_fire ch={channel_id} reason={reason} reply={reply!r}")
+            self._log_typing(f"🔇 time_fire ch={channel_id}")
 
         # Handle any new tool calls (e.g. AI sets another timer)
         self._handle_tool_calls(response, channel_id, channel)
