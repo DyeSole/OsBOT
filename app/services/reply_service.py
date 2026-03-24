@@ -32,6 +32,25 @@ ALARM_TOOLS: list[dict[str, Any]] = [
     },
 ]
 
+SEARCH_TOOL: dict[str, Any] = {
+    "name": "web_search",
+    "description": (
+        "使用搜索引擎搜索互联网上的信息。"
+        "当你需要查找最新信息、不确定的事实、或用户明确要求你搜索时使用。"
+        "返回搜索结果列表，包含标题、链接和摘要。"
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "搜索关键词。",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
 # Available during timer/alarm fires — bot can also set voluntary timers
 TIMER_TOOLS: list[dict[str, Any]] = [
     {
@@ -103,7 +122,7 @@ class ReplyService:
         return self.client.generate_with_tools(
             messages=messages,
             system_prompt=load_system_prompt(),
-            tools=TIMER_TOOLS if include_tools else ALARM_TOOLS,
+            tools=(TIMER_TOOLS if include_tools else ALARM_TOOLS) + [SEARCH_TOOL],
         )
 
     def stream_reply_with_tools(
@@ -119,6 +138,6 @@ class ReplyService:
         return self.client.stream_with_tools(
             messages=messages,
             system_prompt=load_system_prompt(),
-            tools=TIMER_TOOLS if include_tools else ALARM_TOOLS,
+            tools=(TIMER_TOOLS if include_tools else ALARM_TOOLS) + [SEARCH_TOOL],
             on_text=on_text,
         )

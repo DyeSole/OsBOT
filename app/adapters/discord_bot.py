@@ -475,7 +475,7 @@ class DiscordBot:
                 f"🚀 api_sent user={pending.user_label} chunks={len(pending.chunks)} merged_len={len(merged_text)}"
             )
             # Handle tool calls from LLM
-            self._handle_tool_calls(response, channel_id, pending.channel)
+            await self._handle_tool_calls(response, channel_id, pending.channel, prior_messages=messages)
             # Start proactive idle timer after bot replies
             self._schedule_proactive(channel_id, pending.channel)
         except Exception as exc:  # noqa: BLE001
@@ -536,7 +536,7 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-            self._handle_tool_calls(response, channel_id, message.channel)
+            await self._handle_tool_calls(response, channel_id, message.channel, prior_messages=messages)
             self._schedule_proactive(channel_id, message.channel)
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "failed to send reply", exc=exc)
@@ -549,7 +549,14 @@ class DiscordBot:
             except Exception:
                 await message.channel.send("我刚刚有点卡住了，等我一下再试试。")
 
-    def _handle_tool_calls(self, response, channel_id: int, channel: discord.abc.Messageable) -> None:
+    async def _handle_tool_calls(
+        self,
+        response,
+        channel_id: int,
+        channel: discord.abc.Messageable,
+        *,
+        prior_messages: list[dict[str, str]] | None = None,
+    ) -> None:
         """Process tool calls returned by the LLM."""
         for tc in response.tool_calls:
             if tc.name == "set_timer":
@@ -560,6 +567,63 @@ class DiscordBot:
                         self._schedule_alarm(channel_id, channel, seconds, reason)
                     else:
                         self._schedule_variable_timer(channel_id, channel, seconds, source="llm")
+            elif tc.name == "web_search":
+                query = tc.input.get("query", "")
+                if query:
+                    await self._execute_search(query, channel_id, channel, prior_messages)
+
+    async def _execute_search(
+        self,
+        query: str,
+        channel_id: int,
+        channel: discord.abc.Messageable,
+        prior_messages: list[dict[str, str]] | None = None,
+    ) -> None:
+        """Run a web search and feed results back to the LLM for a final reply."""
+        from app.infra.search_client import web_search
+
+        self.logger.info(f"🔍 web_search query={query}")
+        try:
+            results = await asyncio.to_thread(web_search, query)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("UNKNOWN", "web search failed", exc=exc)
+            results = []
+
+        if results:
+            lines = [f"[搜索结果: {query}]"]
+            for r in results:
+                lines.append(f"- {r['title']}\n  {r['body']}\n  {r['href']}")
+            search_block = "\n".join(lines)
+        else:
+            search_block = f"[搜索结果: {query}]\n未找到相关结果。"
+
+        messages = list(prior_messages) if prior_messages else []
+        messages.append({"role": "user", "content": search_block})
+
+        try:
+            async with channel.typing():
+                search_response = await asyncio.to_thread(
+                    self.reply_service.generate_reply_with_tools, messages, include_tools=True,
+                )
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("UNKNOWN", "search follow-up api request failed", exc=exc)
+            return
+
+        reply = (search_response.text or "").strip()
+        if reply:
+            try:
+                await self._reply_by_sentence(None, reply, channel=channel)
+                self.history_store.append_entry(
+                    channel_id=channel_id,
+                    role="assistant",
+                    username=self.settings.bot_key,
+                    time=self._now_clock(),
+                    content=reply,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("UNKNOWN", "failed to send search reply", exc=exc)
+
+        await self._handle_tool_calls(search_response, channel_id, channel, prior_messages=messages)
 
     def _schedule_variable_timer(
         self,
@@ -669,7 +733,7 @@ class DiscordBot:
             self._log_typing(f"🔇 time_fire ch={channel_id}")
 
         # Handle any new tool calls (e.g. AI sets another timer)
-        self._handle_tool_calls(response, channel_id, channel)
+        await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
 
     async def _alarm_fire(
         self,
@@ -742,7 +806,7 @@ class DiscordBot:
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send alarm message", exc=exc)
 
-        self._handle_tool_calls(response, channel_id, channel)
+        await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
 
     def _schedule_proactive(self, channel_id: int, channel: discord.abc.Messageable) -> None:
         """Schedule proactive idle timer — uses the same slot as variable timer."""
@@ -869,7 +933,7 @@ class DiscordBot:
                 except Exception as exc:  # noqa: BLE001
                     self.logger.error("UNKNOWN", "failed to send morning message", exc=exc)
 
-            self._handle_tool_calls(response, channel_id, channel)
+            await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
 
     async def _typing_watchdog(self) -> None:
         while True:
@@ -981,7 +1045,7 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-            self._handle_tool_calls(response, channel_id, channel)
+            await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
             self._schedule_proactive(channel_id, channel)
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "regenerate reply failed", exc=exc)
@@ -1121,7 +1185,7 @@ class DiscordBot:
                 self.logger.info(f"👁️ watch_idle_sent user={user_id} ch={channel_id}")
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send watch idle message", exc=exc)
-        self._handle_tool_calls(response, channel_id, channel)
+        await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
         self._schedule_proactive(channel_id, channel)
 
     def _find_channel_for_user(self, user_id: int, guild: discord.Guild) -> discord.abc.Messageable | None:
