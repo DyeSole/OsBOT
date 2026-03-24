@@ -622,7 +622,7 @@ class DiscordBot:
         is_typing_nudge = channel_id in self._typing_nudge_channels
         self._typing_nudge_channels.discard(channel_id)
         if is_typing_nudge:
-            timer_note = f"[系统提示] {self.prompt_service.read_prompt('typing_nudge')}"
+            timer_note = "[系统提示] ta刚才在打字，但最终没有发出消息。"
         elif seconds != self.proactive_idle_seconds:
             timer_note = f"[system: your set_timer for {seconds}s has expired]\n{self.prompt_service.read_prompt('proactive')}"
         else:
