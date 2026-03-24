@@ -104,9 +104,9 @@ class ReplyService:
             model=settings.model,
         )
         self.vision_client = VisionClient(
-            base_url=settings.vision_base_url,
-            api_key=settings.vision_api_key,
-            model=settings.vision_model,
+            base_url=settings.vision_base_url or settings.base_url,
+            api_key=settings.vision_api_key or settings.api_key,
+            model=settings.vision_model or settings.model,
         )
 
     def generate_reply(self, messages: list[dict[str, str]]) -> str:

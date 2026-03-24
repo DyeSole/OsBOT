@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from app.adapters.discord_bot import DiscordBot
 
 
-class ApiConfigModal(discord.ui.Modal, title="编辑 API 配置"):
+class ApiConfigModal(discord.ui.Modal, title="聊天 API 配置"):
     def __init__(self, bot: DiscordBot):
         super().__init__()
         self.bot = bot
@@ -49,12 +49,12 @@ class ApiConfigModal(discord.ui.Modal, title="编辑 API 配置"):
             }
         )
         await interaction.response.edit_message(
-            content="工具箱\n\nAPI 配置已写入 .env，文件监听会自动生效。",
-            view=ToolboxView(self.bot),
+            content="API 配置\n\n聊天 API 配置已写入 .env，文件监听会自动生效。",
+            view=ApiToolboxView(self.bot),
         )
 
 
-class VisionConfigModal(discord.ui.Modal, title="识图模型配置"):
+class VisionConfigModal(discord.ui.Modal, title="识图 API 配置"):
     def __init__(self, bot: DiscordBot):
         super().__init__()
         self.bot = bot
@@ -65,21 +65,21 @@ class VisionConfigModal(discord.ui.Modal, title="识图模型配置"):
             default=env_values.get("VISION_BASE_URL", current.vision_base_url),
             required=False,
             max_length=400,
-            placeholder="留空则不启用识图",
+            placeholder="留空则使用聊天 API 的 BASE_URL",
         )
         self.vision_api_key = discord.ui.TextInput(
             label="VISION_API_KEY",
             default=env_values.get("VISION_API_KEY", current.vision_api_key),
             required=False,
             max_length=400,
-            placeholder="可与主 API_KEY 相同",
+            placeholder="留空则使用聊天 API 的 API_KEY",
         )
         self.vision_model = discord.ui.TextInput(
             label="VISION_MODEL",
             default=env_values.get("VISION_MODEL", current.vision_model),
             required=False,
             max_length=120,
-            placeholder="例如 claude-haiku-4-5-20251001",
+            placeholder="留空则使用聊天 API 的 MODEL",
         )
         self.add_item(self.vision_base_url)
         self.add_item(self.vision_api_key)
@@ -94,8 +94,8 @@ class VisionConfigModal(discord.ui.Modal, title="识图模型配置"):
             }
         )
         await interaction.response.edit_message(
-            content="工具箱\n\n识图模型配置已写入 .env，文件监听会自动生效。",
-            view=ToolboxView(self.bot),
+            content="API 配置\n\n识图 API 配置已写入 .env，文件监听会自动生效。",
+            view=ApiToolboxView(self.bot),
         )
 
 
@@ -337,6 +337,31 @@ class TypingNudgeModal(discord.ui.Modal, title="表情|打字 设置"):
 
 
 # ---------------------------------------------------------------------------
+# Sub-panel: API 配置
+# ---------------------------------------------------------------------------
+
+class ApiToolboxView(discord.ui.View):
+    def __init__(self, bot: DiscordBot):
+        super().__init__(timeout=300)
+        self.bot = bot
+
+    @discord.ui.button(label="聊天 API", style=discord.ButtonStyle.primary)
+    async def chat_api(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(ApiConfigModal(self.bot))
+
+    @discord.ui.button(label="识图 API", style=discord.ButtonStyle.primary)
+    async def vision_api(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(VisionConfigModal(self.bot))
+
+    @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(
+            content="工具箱",
+            view=ToolboxView(self.bot),
+        )
+
+
+# ---------------------------------------------------------------------------
 # Sub-panel: 提示词编辑
 # ---------------------------------------------------------------------------
 
@@ -473,13 +498,12 @@ class ToolboxView(discord.ui.View):
         super().__init__(timeout=300)
         self.bot = bot
 
-    @discord.ui.button(label="API配置", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="API 配置", style=discord.ButtonStyle.primary)
     async def api_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(ApiConfigModal(self.bot))
-
-    @discord.ui.button(label="识图配置", style=discord.ButtonStyle.primary)
-    async def vision_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(VisionConfigModal(self.bot))
+        await interaction.response.edit_message(
+            content="API 配置",
+            view=ApiToolboxView(self.bot),
+        )
 
     @discord.ui.button(label="主动消息", style=discord.ButtonStyle.primary)
     async def proactive(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
