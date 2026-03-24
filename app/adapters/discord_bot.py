@@ -1375,12 +1375,18 @@ class DiscordBot:
         if uid_str not in self.settings.watch_user_ids:
             return
         if str(channel.id) not in self.settings.jealousy_channel_ids:
+            self.logger.info(f"💚 jealousy_skip user={uid_str} ch={channel.id} not_in_jealousy_ids")
             return
         guild = getattr(channel, "guild", None)
         if guild is None:
+            self.logger.info(f"💚 jealousy_skip user={uid_str} no_guild")
             return
         bot_channel = self._find_channel_for_user(user.id, guild)
-        if bot_channel is None or bot_channel.id == channel.id:
+        if bot_channel is None:
+            self.logger.info(f"💚 jealousy_skip user={uid_str} no_bot_channel")
+            return
+        if bot_channel.id == channel.id:
+            self.logger.info(f"💚 jealousy_skip user={uid_str} same_channel")
             return
         # Increment typing count
         self._jealousy_counts[user.id] = self._jealousy_counts.get(user.id, 0) + 1
