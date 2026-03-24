@@ -205,6 +205,36 @@ class ProactiveModal(discord.ui.Modal, title="主动发信息"):
         )
 
 
+class WatchUsersModal(discord.ui.Modal, title="监听用户上线"):
+    def __init__(self, bot: DiscordBot):
+        super().__init__()
+        self.bot = bot
+        ids = bot.settings.watch_user_ids
+        # Pad to 6 slots
+        padded = (ids + [""] * 6)[:6]
+        self.slots: list[discord.ui.TextInput] = []
+        for i in range(5):
+            inp = discord.ui.TextInput(
+                label=f"用户 ID {i + 1}",
+                default=padded[i],
+                required=False,
+                max_length=25,
+                placeholder="Discord User ID",
+            )
+            self.slots.append(inp)
+            self.add_item(inp)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        ids = [s.value.strip() for s in self.slots if s.value.strip()]
+        update_env_values({"WATCH_USER_IDS": ",".join(ids)})
+        await self.bot.reload_settings_if_needed()
+        id_list = "\n".join(f"  {uid}" for uid in ids) if ids else "  （无）"
+        await interaction.response.edit_message(
+            content=f"工具箱\n\n监听用户已更新：\n{id_list}",
+            view=ToolboxView(self.bot),
+        )
+
+
 class PromptToolboxView(discord.ui.View):
     def __init__(self, bot: DiscordBot):
         super().__init__(timeout=300)
@@ -290,6 +320,10 @@ class ToolboxView(discord.ui.View):
     @discord.ui.button(label="静默时间", style=discord.ButtonStyle.secondary)
     async def quiet_hours(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(QuietHoursModal(self.bot))
+
+    @discord.ui.button(label="监听上线", style=discord.ButtonStyle.secondary)
+    async def watch_users(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(WatchUsersModal(self.bot))
 
     @discord.ui.button(label="提示词", style=discord.ButtonStyle.secondary)
     async def prompts(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

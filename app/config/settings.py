@@ -31,6 +31,11 @@ class Settings:
     quiet_enabled: bool = False
     quiet_start: str = ""   # e.g. "23:00"
     quiet_end: str = ""     # e.g. "07:00"
+    watch_user_ids: list[str] = None  # up to 6 Discord user IDs to monitor presence
+
+    def __post_init__(self) -> None:
+        if self.watch_user_ids is None:
+            self.watch_user_ids = []
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -90,6 +95,8 @@ def load_settings() -> Settings:
     quiet_enabled = _env_bool("QUIET_ENABLED", env_file, False)
     quiet_start = _env_value("QUIET_START", env_file, "").strip()
     quiet_end = _env_value("QUIET_END", env_file, "").strip()
+    raw_watch = _env_value("WATCH_USER_IDS", env_file, "").strip()
+    watch_user_ids = [uid.strip() for uid in raw_watch.split(",") if uid.strip()] if raw_watch else []
 
     return Settings(
         bot_key=bot_key,
@@ -111,6 +118,7 @@ def load_settings() -> Settings:
         quiet_enabled=quiet_enabled,
         quiet_start=quiet_start,
         quiet_end=quiet_end,
+        watch_user_ids=watch_user_ids,
     )
 
 
@@ -140,6 +148,7 @@ def summarize_settings(settings: Settings) -> dict[str, Any]:
         "QUIET_ENABLED": settings.quiet_enabled,
         "QUIET_START": settings.quiet_start,
         "QUIET_END": settings.quiet_end,
+        "WATCH_USER_IDS": settings.watch_user_ids,
         "API_KEY_SET": bool(settings.api_key),
         "DISCORD_BOT_TOKEN_SET": bool(settings.discord_bot_token),
     }

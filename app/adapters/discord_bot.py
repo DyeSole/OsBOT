@@ -83,12 +83,15 @@ class DiscordBot:
         self.tree = app_commands.CommandTree(self.client)
         self._commands_synced = False
 
+        self._watch_previous_status: dict[int, str] = {}  # user_id -> previous status
+
         self.client.event(self.on_ready)
         self.client.event(self.on_message)
         self.client.event(self.on_message_edit)
         self.client.event(self.on_typing)
         self.client.event(self.on_raw_reaction_add)
         self.client.event(self.on_guild_channel_delete)
+        self.client.event(self.on_presence_update)
         self._register_app_commands()
 
     def _register_app_commands(self) -> None:
@@ -1030,6 +1033,23 @@ class DiscordBot:
         if self._env_watch_task is None or self._env_watch_task.done():
             self._env_watch_task = asyncio.create_task(self._watch_env_changes())
         await self._cleanup_orphaned_data()
+
+    async def on_presence_update(self, before: discord.Member, after: discord.Member) -> None:
+        uid_str = str(after.id)
+        if uid_str not in self.settings.watch_user_ids:
+            return
+        old_status = str(before.status)
+        new_status = str(after.status)
+        if old_status == new_status:
+            return
+        prev = self._watch_previous_status.get(after.id)
+        self._watch_previous_status[after.id] = new_status
+        # Only log actual transitions (skip initial cache fills)
+        if prev is None and old_status == "offline":
+            # First observation — Discord replaying cached state, skip
+            self._watch_previous_status[after.id] = new_status
+        name = after.display_name
+        self.logger.info(f"👁️ presence {name}({uid_str}): {old_status} -> {new_status}")
 
     async def on_typing(self, channel, user, when):  # type: ignore[no-untyped-def]
         if user.bot:
