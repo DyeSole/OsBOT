@@ -590,12 +590,13 @@ class DiscordBot:
         """Run a web search and feed results back to the LLM for a final reply."""
         from app.infra.search_client import web_search
 
-        self.logger.info(f"🔍 web_search query={query}")
+        self.logger.info(f"🔍 web_search query={query} depth={search_depth}")
         status_msg = None
-        try:
-            status_msg = await channel.send(f"正在搜索...")
-        except Exception:  # noqa: BLE001
-            pass
+        if search_depth == 0:
+            try:
+                status_msg = await channel.send("正在搜索...")
+            except Exception:  # noqa: BLE001
+                pass
         try:
             results = await asyncio.to_thread(web_search, query)
         except Exception as exc:  # noqa: BLE001
@@ -627,7 +628,7 @@ class DiscordBot:
         try:
             async with channel.typing():
                 search_response = await asyncio.to_thread(
-                    self.reply_service.generate_reply_with_tools, messages, include_tools=wants_more,
+                    self.reply_service.generate_reply_with_tools, messages, include_tools=True, include_search=wants_more,
                 )
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "search follow-up api request failed", exc=exc)

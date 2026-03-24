@@ -120,14 +120,18 @@ class ReplyService:
         messages: list[dict[str, str]],
         *,
         include_tools: bool = False,
+        include_search: bool = True,
     ) -> LLMResponse:
         if not messages:
             return LLMResponse(text="哎，我字呢？")
 
+        tools = TIMER_TOOLS if include_tools else ALARM_TOOLS
+        if include_search:
+            tools = tools + [SEARCH_TOOL]
         return self.client.generate_with_tools(
             messages=messages,
             system_prompt=load_system_prompt(),
-            tools=(TIMER_TOOLS if include_tools else ALARM_TOOLS) + [SEARCH_TOOL],
+            tools=tools,
         )
 
     def stream_reply_with_tools(
