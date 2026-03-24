@@ -62,7 +62,7 @@ def _grok_search(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": query},
         ],
-        search_mode="auto",
+        extra_body={"search_mode": "auto"},
     )
 
     text = (response.choices[0].message.content or "").strip()
