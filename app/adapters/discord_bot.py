@@ -1189,19 +1189,7 @@ class DiscordBot:
             reaction_text = f"[反应: {emoji_str}]"
 
         channel_id = payload.channel_id
-        vt = self._variable_timers.get(channel_id)
-        if vt is not None:
-            _, deadline = vt
-            remaining = deadline - time.monotonic()
-            if remaining < self.proactive_idle_seconds:
-                # Buffer reaction — will be attached to the next timer fire
-                self._pending_reactions.setdefault(channel_id, []).append(reaction_text)
-                self.logger.info(
-                    f"😊 reaction_buffered ch={channel_id} remaining={remaining:.0f}s"
-                )
-                return
-
-        # No timer or remaining >= proactive_idle_seconds: buffer + schedule 60s nudge
+        # Buffer reaction and schedule a nudge (replaces timer if nudge is sooner)
         self._pending_reactions.setdefault(channel_id, []).append(reaction_text)
         self._maybe_schedule_typing_nudge(channel_id, channel)
 
