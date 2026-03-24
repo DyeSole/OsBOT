@@ -38,6 +38,8 @@ SEARCH_TOOL: dict[str, Any] = {
         "使用搜索引擎搜索互联网上的信息。"
         "当你需要查找最新信息、不确定的事实、或用户明确要求你搜索时使用。"
         "返回搜索结果列表，包含标题、链接和摘要。"
+        "可通过 site 参数指定在特定平台搜索：xiaohongshu(小红书)、bilibili(B站)、x(推特)。"
+        "不指定 site 则搜索全网。"
     ),
     "input_schema": {
         "type": "object",
@@ -45,6 +47,11 @@ SEARCH_TOOL: dict[str, Any] = {
             "query": {
                 "type": "string",
                 "description": "搜索关键词。",
+            },
+            "site": {
+                "type": "string",
+                "description": "限定搜索平台。可选值: xiaohongshu / bilibili / x。不填则搜索全网。",
+                "enum": ["xiaohongshu", "bilibili", "x"],
             },
         },
         "required": ["query"],

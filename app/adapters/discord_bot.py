@@ -569,8 +569,9 @@ class DiscordBot:
                         self._schedule_variable_timer(channel_id, channel, seconds, source="llm")
             elif tc.name == "web_search":
                 query = tc.input.get("query", "")
+                site = tc.input.get("site", "")
                 if query:
-                    await self._execute_search(query, channel_id, channel, prior_messages)
+                    await self._execute_search(query, channel_id, channel, prior_messages, site=site)
 
     async def _execute_search(
         self,
@@ -578,13 +579,18 @@ class DiscordBot:
         channel_id: int,
         channel: discord.abc.Messageable,
         prior_messages: list[dict[str, str]] | None = None,
+        *,
+        site: str = "",
     ) -> None:
         """Run a web search and feed results back to the LLM for a final reply."""
-        from app.infra.search_client import web_search
+        from app.infra.search_client import site_search, web_search
 
-        self.logger.info(f"🔍 web_search query={query}")
+        self.logger.info(f"🔍 web_search query={query} site={site or 'all'}")
         try:
-            results = await asyncio.to_thread(web_search, query)
+            if site:
+                results = await asyncio.to_thread(site_search, query, site)
+            else:
+                results = await asyncio.to_thread(web_search, query)
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "web search failed", exc=exc)
             results = []
