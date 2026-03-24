@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Callable
 
 from app.config.settings import Settings
 from app.infra.llm_client import LLMClient, LLMResponse
-
-
-PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
-SOUL_PROMPT_PATH = PROMPTS_DIR / "soul.txt"
-USERINFO_PROMPT_PATH = PROMPTS_DIR / "userinfo.txt"
+from app.services.prompt_service import PromptService
 
 # Available in normal conversation — only for user-requested alarms
 ALARM_TOOLS: list[dict[str, Any]] = [
@@ -65,19 +60,15 @@ TIMER_TOOLS: list[dict[str, Any]] = [
 ]
 
 
-def _read_optional(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
+_prompt_service = PromptService()
 
 
 def load_system_prompt() -> str:
     parts: list[str] = []
-    soul = _read_optional(SOUL_PROMPT_PATH)
+    soul = _prompt_service.read_prompt("soul").strip()
     if soul:
         parts.append(f"[人格设定]\n{soul}")
-    userinfo = _read_optional(USERINFO_PROMPT_PATH)
+    userinfo = _prompt_service.read_prompt("userinfo").strip()
     if userinfo:
         parts.append(f"[用户信息]\n{userinfo}")
     return "\n\n".join(parts)

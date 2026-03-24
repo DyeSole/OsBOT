@@ -57,7 +57,6 @@ class DiscordBot:
         self.typing_nudge_seconds = settings.typing_nudge_seconds
         self.watch_online_idle_seconds = settings.watch_online_idle_seconds
         self.session_timeout_seconds = settings.session_timeout_seconds
-        self.typing_timeout_seconds = settings.session_timeout_seconds
         self.typing_detect_delay_seconds = settings.typing_detect_delay_seconds
         self.reset_timer_seconds = settings.reset_timer_seconds
         self._env_watch_task: asyncio.Task | None = None
@@ -163,7 +162,6 @@ class DiscordBot:
         self.logger.mode = settings.app_mode
         self.logger.show_error_detail = settings.show_error_detail
         self.session_timeout_seconds = settings.session_timeout_seconds
-        self.typing_timeout_seconds = settings.session_timeout_seconds
         self.typing_detect_delay_seconds = settings.typing_detect_delay_seconds
         self.reset_timer_seconds = settings.reset_timer_seconds
         self.proactive_idle_seconds = settings.proactive_idle_seconds
@@ -562,7 +560,6 @@ class DiscordBot:
                         self._schedule_alarm(channel_id, channel, seconds, reason)
                     else:
                         self._schedule_variable_timer(channel_id, channel, seconds, source="llm")
-                    pass  # timer_start already logged by _schedule_variable_timer / _schedule_alarm
 
     def _schedule_variable_timer(
         self,
@@ -669,7 +666,6 @@ class DiscordBot:
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send variable timer message", exc=exc)
         else:
-            reason = "empty_reply" if not reply else "SILENT"
             self._log_typing(f"🔇 time_fire ch={channel_id}")
 
         # Handle any new tool calls (e.g. AI sets another timer)
@@ -881,7 +877,7 @@ class DiscordBot:
             now = time.monotonic()
             expired: list[tuple[int, int]] = []
             for key, session in self._typing_sessions.items():
-                if now - session.last_seen_at >= self.typing_timeout_seconds:
+                if now - session.last_seen_at >= self.session_timeout_seconds:
                     expired.append(key)
             for channel_id, user_id in expired:
                 self._stop_typing_session(channel_id, user_id, reason="timeout")
