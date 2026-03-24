@@ -1251,7 +1251,6 @@ class DiscordBot:
             self._typing_watchdog_task = asyncio.create_task(self._typing_watchdog())
         if self._env_watch_task is None or self._env_watch_task.done():
             self._env_watch_task = asyncio.create_task(self._watch_env_changes())
-        await self._cleanup_orphaned_data()
 
     async def on_presence_update(self, before: discord.Member, after: discord.Member) -> None:
         uid_str = str(after.id)
