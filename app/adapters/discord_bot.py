@@ -54,6 +54,8 @@ class DiscordBot:
         self.prompt_service = PromptService()
         self.context_builder = ContextBuilder(self.history_store, self.compression_store)
         self.proactive_idle_seconds = settings.proactive_idle_seconds
+        self.typing_nudge_seconds = settings.typing_nudge_seconds
+        self.watch_online_idle_seconds = settings.watch_online_idle_seconds
         self.session_timeout_seconds = settings.session_timeout_seconds
         self.typing_timeout_seconds = settings.session_timeout_seconds
         self.typing_detect_delay_seconds = settings.typing_detect_delay_seconds
@@ -165,6 +167,8 @@ class DiscordBot:
         self.typing_detect_delay_seconds = settings.typing_detect_delay_seconds
         self.reset_timer_seconds = settings.reset_timer_seconds
         self.proactive_idle_seconds = settings.proactive_idle_seconds
+        self.typing_nudge_seconds = settings.typing_nudge_seconds
+        self.watch_online_idle_seconds = settings.watch_online_idle_seconds
         if settings.discord_bot_token != old_token:
             self.logger.error(
                 "CONFIG",
@@ -751,13 +755,11 @@ class DiscordBot:
             return
         self._schedule_variable_timer(channel_id, channel, self.proactive_idle_seconds)
 
-    _TYPING_NUDGE_SECONDS = 60.0
-
     def _maybe_schedule_typing_nudge(
         self, channel_id: int, channel: discord.abc.Messageable,
     ) -> None:
-        """Schedule a 60s typing-nudge, but only if it's shorter than the current timer."""
-        nudge = self._TYPING_NUDGE_SECONDS
+        """Schedule a typing-nudge, but only if it's shorter than the current timer."""
+        nudge = self.typing_nudge_seconds
         vt = self._variable_timers.get(channel_id)
         if vt is not None:
             _, deadline = vt
@@ -1062,7 +1064,7 @@ class DiscordBot:
         self._watch_online_timers[user_id] = asyncio.create_task(
             self._watch_idle_fire(user_id, guild)
         )
-        self.logger.info(f"👁️ watch_timer_start user={user_id} s=600")
+        self.logger.info(f"👁️ watch_timer_start user={user_id} s={self.watch_online_idle_seconds:.0f}")
 
     def _cancel_watch_timer(self, user_id: int) -> None:
         task = self._watch_online_timers.pop(user_id, None)
@@ -1070,8 +1072,8 @@ class DiscordBot:
             task.cancel()
 
     async def _watch_idle_fire(self, user_id: int, guild: discord.Guild) -> None:
-        """After 10 minutes of no messages from watched user, proactively reach out."""
-        await asyncio.sleep(600)
+        """After configured idle period, proactively reach out to watched user."""
+        await asyncio.sleep(self.watch_online_idle_seconds)
         self._watch_online_timers.pop(user_id, None)
         # Find the most recent channel where this user talked to the bot
         channel = self._find_channel_for_user(user_id, guild)

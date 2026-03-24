@@ -28,6 +28,8 @@ class Settings:
     typing_wait: bool = True   # True = wait for typing idle, False = reply immediately
     split_mode: str = "chat"  # "chat" = split by newline, "novel" = no split
     chat_reply_delay_seconds: float = 0.8  # pause between split messages in chat mode
+    typing_nudge_seconds: float = 60.0  # seconds before typing/reaction nudge fires
+    watch_online_idle_seconds: float = 600.0  # seconds to wait after watched user comes online
     quiet_enabled: bool = False
     quiet_start: str = ""   # e.g. "23:00"
     quiet_end: str = ""     # e.g. "07:00"
@@ -92,6 +94,8 @@ def load_settings() -> Settings:
     split_mode = _env_value("SPLIT_MODE", env_file, "chat").strip().lower() or "chat"
     if split_mode not in ("chat", "novel"):
         split_mode = "chat"
+    typing_nudge_seconds = float(_env_value("TYPING_NUDGE_SECONDS", env_file, "60.0").strip() or "60.0")
+    watch_online_idle_seconds = float(_env_value("WATCH_ONLINE_IDLE_SECONDS", env_file, "600.0").strip() or "600.0")
     quiet_enabled = _env_bool("QUIET_ENABLED", env_file, False)
     quiet_start = _env_value("QUIET_START", env_file, "").strip()
     quiet_end = _env_value("QUIET_END", env_file, "").strip()
@@ -112,6 +116,8 @@ def load_settings() -> Settings:
         typing_detect_delay_seconds=max(0.0, typing_detect_delay_seconds),
         reset_timer_seconds=max(0.1, reset_timer_seconds),
         proactive_idle_seconds=max(0.0, proactive_idle_seconds),
+        typing_nudge_seconds=max(0.0, typing_nudge_seconds),
+        watch_online_idle_seconds=max(0.0, watch_online_idle_seconds),
         typing_wait=typing_wait,
         chat_reply_delay_seconds=max(0.0, chat_reply_delay_seconds),
         split_mode=split_mode,
@@ -142,6 +148,8 @@ def summarize_settings(settings: Settings) -> dict[str, Any]:
         "TYPING_DETECT_DELAY_SECONDS": settings.typing_detect_delay_seconds,
         "RESET_TIMER_SECONDS": settings.reset_timer_seconds,
         "PROACTIVE_IDLE_SECONDS": settings.proactive_idle_seconds,
+        "TYPING_NUDGE_SECONDS": settings.typing_nudge_seconds,
+        "WATCH_ONLINE_IDLE_SECONDS": settings.watch_online_idle_seconds,
         "TYPING_WAIT": settings.typing_wait,
         "CHAT_REPLY_DELAY_SECONDS": settings.chat_reply_delay_seconds,
         "SPLIT_MODE": settings.split_mode,

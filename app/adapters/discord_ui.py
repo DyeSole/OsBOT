@@ -78,7 +78,7 @@ class PromptEditModal(discord.ui.Modal):
             content=self.content.value,
         )
         await interaction.response.edit_message(
-            content="提示词工具箱\n\n提示词已保存，下一次调用会自动生效。",
+            content="提示词编辑\n\n提示词已保存，下一次调用会自动生效。",
             view=PromptToolboxView(self.bot),
         )
 
@@ -118,7 +118,7 @@ class SoulEditModal(discord.ui.Modal, title="编辑人格 & Kink"):
             combined = soul_text
         self.bot.prompt_service.write_prompt(target="soul", content=combined)
         await interaction.response.edit_message(
-            content="提示词工具箱\n\n人格 & Kink 已保存，下一次调用会自动生效。",
+            content="提示词编辑\n\n人格 & Kink 已保存，下一次调用会自动生效。",
             view=PromptToolboxView(self.bot),
         )
 
@@ -160,12 +160,12 @@ class QuietHoursModal(discord.ui.Modal, title="静默时间设置"):
             }
         )
         await interaction.response.edit_message(
-            content="工具箱\n\n静默时间配置已写入 .env，文件监听会自动生效。",
-            view=ToolboxView(self.bot),
+            content="主动消息\n\n静默时间配置已写入 .env，文件监听会自动生效。",
+            view=ProactiveToolboxView(self.bot),
         )
 
 
-class ProactiveModal(discord.ui.Modal, title="主动发信息"):
+class ProactiveModal(discord.ui.Modal, title="聊天主动设置"):
     def __init__(self, bot: DiscordBot):
         super().__init__()
         self.bot = bot
@@ -200,8 +200,36 @@ class ProactiveModal(discord.ui.Modal, title="主动发信息"):
         )
         await self.bot.reload_settings_if_needed()
         await interaction.response.edit_message(
-            content="工具箱\n\n主动发信配置已保存，立即生效。",
-            view=ToolboxView(self.bot),
+            content="主动消息\n\n聊天主动配置已保存，立即生效。",
+            view=ProactiveToolboxView(self.bot),
+        )
+
+
+class WatchOnlineTimeModal(discord.ui.Modal, title="上线等待时间"):
+    def __init__(self, bot: DiscordBot):
+        super().__init__()
+        self.bot = bot
+        env_values = read_env_values()
+        current = bot.settings
+        self.idle_seconds = discord.ui.TextInput(
+            label="上线后等待时间（秒），0=关闭",
+            default=env_values.get(
+                "WATCH_ONLINE_IDLE_SECONDS",
+                str(int(current.watch_online_idle_seconds)),
+            ),
+            required=True,
+            max_length=10,
+        )
+        self.add_item(self.idle_seconds)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        update_env_values(
+            {"WATCH_ONLINE_IDLE_SECONDS": self.idle_seconds.value.strip()}
+        )
+        await self.bot.reload_settings_if_needed()
+        await interaction.response.edit_message(
+            content=f"主动消息\n\n上线等待时间已设为 {self.idle_seconds.value.strip()} 秒。",
+            view=ProactiveToolboxView(self.bot),
         )
 
 
@@ -230,10 +258,42 @@ class WatchUsersModal(discord.ui.Modal, title="监听用户上线"):
         await self.bot.reload_settings_if_needed()
         id_list = "\n".join(f"  {uid}" for uid in ids) if ids else "  （无）"
         await interaction.response.edit_message(
-            content=f"工具箱\n\n监听用户已更新：\n{id_list}",
-            view=ToolboxView(self.bot),
+            content=f"主动消息\n\n监听用户已更新：\n{id_list}",
+            view=ProactiveToolboxView(self.bot),
         )
 
+
+class TypingNudgeModal(discord.ui.Modal, title="表情|打字 设置"):
+    def __init__(self, bot: DiscordBot):
+        super().__init__()
+        self.bot = bot
+        env_values = read_env_values()
+        current = bot.settings
+        self.nudge_seconds = discord.ui.TextInput(
+            label="表情/打字触发等待时间（秒）",
+            default=env_values.get(
+                "TYPING_NUDGE_SECONDS",
+                str(int(current.typing_nudge_seconds)),
+            ),
+            required=True,
+            max_length=10,
+        )
+        self.add_item(self.nudge_seconds)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        update_env_values(
+            {"TYPING_NUDGE_SECONDS": self.nudge_seconds.value.strip()}
+        )
+        await self.bot.reload_settings_if_needed()
+        await interaction.response.edit_message(
+            content=f"主动消息\n\n表情|打字等待时间已设为 {self.nudge_seconds.value.strip()} 秒。",
+            view=ProactiveToolboxView(self.bot),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Sub-panel: 提示词编辑
+# ---------------------------------------------------------------------------
 
 class PromptToolboxView(discord.ui.View):
     def __init__(self, bot: DiscordBot):
@@ -264,13 +324,55 @@ class PromptToolboxView(discord.ui.View):
         )
 
 
-class ToolboxView(discord.ui.View):
+# ---------------------------------------------------------------------------
+# Sub-panel: 主动消息
+# ---------------------------------------------------------------------------
+
+class ProactiveToolboxView(discord.ui.View):
     def __init__(self, bot: DiscordBot):
         super().__init__(timeout=300)
         self.bot = bot
-        # Split mode toggle
+
+    @discord.ui.button(label="聊天主动", style=discord.ButtonStyle.primary)
+    async def chat_proactive(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(ProactiveModal(self.bot))
+
+    @discord.ui.button(label="上线时间", style=discord.ButtonStyle.primary)
+    async def watch_online_time(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(WatchOnlineTimeModal(self.bot))
+
+    @discord.ui.button(label="监听上线", style=discord.ButtonStyle.primary)
+    async def watch_users(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(WatchUsersModal(self.bot))
+
+    @discord.ui.button(label="表情|打字", style=discord.ButtonStyle.secondary)
+    async def typing_nudge(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(TypingNudgeModal(self.bot))
+
+    @discord.ui.button(label="静默时间", style=discord.ButtonStyle.secondary)
+    async def quiet_hours(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(QuietHoursModal(self.bot))
+
+    @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(
+            content="工具箱",
+            view=ToolboxView(self.bot),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Sub-panel: 聊天控制
+# ---------------------------------------------------------------------------
+
+class ChatControlView(discord.ui.View):
+    def __init__(self, bot: DiscordBot):
+        super().__init__(timeout=300)
+        self.bot = bot
+
+        # Split mode toggle (no checkmark)
         is_novel = bot.settings.split_mode == "novel"
-        split_label = "小说模式 ✓" if is_novel else "聊天模式 ✓"
+        split_label = "小说模式" if is_novel else "聊天模式"
         self.split_btn = discord.ui.Button(
             label=split_label,
             style=discord.ButtonStyle.success if is_novel else discord.ButtonStyle.primary,
@@ -278,9 +380,9 @@ class ToolboxView(discord.ui.View):
         self.split_btn.callback = self._toggle_split_mode
         self.add_item(self.split_btn)
 
-        # Typing wait toggle
+        # Typing wait toggle (no checkmark)
         tw = bot.settings.typing_wait
-        tw_label = "等待输入 ✓" if tw else "即时回复 ✓"
+        tw_label = "等待输入" if tw else "即时回复"
         self.tw_btn = discord.ui.Button(
             label=tw_label,
             style=discord.ButtonStyle.primary if tw else discord.ButtonStyle.success,
@@ -295,8 +397,8 @@ class ToolboxView(discord.ui.View):
         await self.bot.reload_settings_if_needed()
         label = "小说模式" if new_mode == "novel" else "聊天模式"
         await interaction.response.edit_message(
-            content=f"工具箱\n\n已切换为{label}",
-            view=ToolboxView(self.bot),
+            content=f"聊天控制\n\n已切换为{label}",
+            view=ChatControlView(self.bot),
         )
 
     async def _toggle_typing_wait(self, interaction: discord.Interaction) -> None:
@@ -305,29 +407,48 @@ class ToolboxView(discord.ui.View):
         await self.bot.reload_settings_if_needed()
         label = "等待输入" if new_val else "即时回复"
         await interaction.response.edit_message(
-            content=f"工具箱\n\n已切换为{label}",
+            content=f"聊天控制\n\n已切换为{label}",
+            view=ChatControlView(self.bot),
+        )
+
+    @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(
+            content="工具箱",
             view=ToolboxView(self.bot),
         )
+
+
+# ---------------------------------------------------------------------------
+# Main: 工具箱
+# ---------------------------------------------------------------------------
+
+class ToolboxView(discord.ui.View):
+    def __init__(self, bot: DiscordBot):
+        super().__init__(timeout=300)
+        self.bot = bot
 
     @discord.ui.button(label="API配置", style=discord.ButtonStyle.primary)
     async def api_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(ApiConfigModal(self.bot))
 
-    @discord.ui.button(label="主动发信息", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="主动消息", style=discord.ButtonStyle.primary)
     async def proactive(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(ProactiveModal(self.bot))
+        await interaction.response.edit_message(
+            content="主动消息",
+            view=ProactiveToolboxView(self.bot),
+        )
 
-    @discord.ui.button(label="静默时间", style=discord.ButtonStyle.secondary)
-    async def quiet_hours(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(QuietHoursModal(self.bot))
+    @discord.ui.button(label="聊天控制", style=discord.ButtonStyle.primary)
+    async def chat_control(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(
+            content="聊天控制",
+            view=ChatControlView(self.bot),
+        )
 
-    @discord.ui.button(label="监听上线", style=discord.ButtonStyle.secondary)
-    async def watch_users(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(WatchUsersModal(self.bot))
-
-    @discord.ui.button(label="提示词", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="提示词编辑", style=discord.ButtonStyle.secondary)
     async def prompts(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(
-            content="提示词工具箱",
+            content="提示词编辑",
             view=PromptToolboxView(self.bot),
         )
