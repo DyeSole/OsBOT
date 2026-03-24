@@ -636,10 +636,17 @@ class DiscordBot:
         else:
             search_block = f"[搜索结果: {query}]\n未找到相关结果。"
 
-        # Build context for LLM: recent history (context_entries) + search results
-        recent_block = self.history_store.render_entries(recent) if recent else ""
-        context_parts = [p for p in [recent_block, search_block] if p]
-        messages = [{"role": "user", "content": "\n\n".join(context_parts)}]
+        # Build context for LLM: recent history + accumulated search results
+        if search_depth == 0:
+            # First round: build fresh context from recent history
+            recent_block = self.history_store.render_entries(recent) if recent else ""
+            context_parts = [p for p in [recent_block, search_block] if p]
+            messages = [{"role": "user", "content": "\n\n".join(context_parts)}]
+        else:
+            # Subsequent rounds: append new search results to prior context
+            # (prior_messages already contains history + previous search results)
+            messages = list(prior_messages) if prior_messages else []
+            messages.append({"role": "user", "content": search_block})
 
         # Check if LLM wants another search round — if so, skip reply and continue
         next_depth = search_depth + 1
@@ -687,8 +694,15 @@ class DiscordBot:
         reply = (search_response.text or "").strip()
         if reply:
             try:
-                if edit_msg:
+                if edit_msg and len(reply) <= 2000:
                     await edit_msg.edit(content=reply)
+                elif edit_msg:
+                    # Reply too long for a single edit — delete placeholder and send split
+                    try:
+                        await edit_msg.delete()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    await self._reply_by_sentence(None, reply, channel=channel)
                 else:
                     await self._reply_by_sentence(None, reply, channel=channel)
                 self.history_store.append_entry(
@@ -701,7 +715,7 @@ class DiscordBot:
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send search reply", exc=exc)
 
-        await self._handle_tool_calls(search_response, channel_id, channel, prior_messages=messages, search_depth=next_depth)
+        await self._handle_tool_calls(search_response, channel_id, channel, prior_messages=messages, search_depth=next_depth, edit_msg=edit_msg)
 
     def _schedule_variable_timer(
         self,
