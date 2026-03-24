@@ -69,6 +69,7 @@ info "虚拟环境: $VENV_DIR"
 info "安装 Python 依赖..."
 pip install --upgrade pip -q
 pip install -r requirements.txt -q
+playwright install --with-deps chromium 2>/dev/null || warn "Playwright 浏览器安装失败（截图功能不可用，其他功能不受影响）"
 info "依赖安装完成"
 
 # ── 6. 创建数据目录 ──
