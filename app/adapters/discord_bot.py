@@ -155,6 +155,71 @@ class DiscordBot:
                 ephemeral=True,
             )
 
+        @self.tree.command(name="截图", description="用浏览器截图指定URL")
+        @discord.app_commands.describe(
+            url="要截图的网址",
+            profile="登录态名称（如 bilibili、xiaohongshu），不填则匿名",
+            full_page="是否截全页，默认否",
+        )
+        async def browser_screenshot(
+            interaction: discord.Interaction,
+            url: str,
+            profile: str = "",
+            full_page: bool = False,
+        ) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                from app.infra.browser_client import screenshot as _screenshot
+
+                data = await _screenshot(
+                    url,
+                    profile=profile or None,
+                    full_page=full_page,
+                )
+                import io
+                file = discord.File(io.BytesIO(data), filename="screenshot.png")
+                await interaction.followup.send(file=file, ephemeral=True)
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("BROWSER", "screenshot failed", exc=exc)
+                await interaction.followup.send(
+                    f"截图失败: {exc}",
+                    ephemeral=True,
+                )
+
+        @self.tree.command(name="浏览器登录", description="打开浏览器手动登录并保存登录态")
+        @discord.app_commands.describe(
+            profile="登录态名称（如 bilibili、xiaohongshu）",
+            url="登录页面URL",
+        )
+        async def browser_login(
+            interaction: discord.Interaction,
+            profile: str,
+            url: str,
+        ) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                from app.infra.browser_client import save_login
+
+                msg = await save_login(profile, url, timeout_ms=120_000)
+                await interaction.followup.send(msg, ephemeral=True)
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("BROWSER", "login save failed", exc=exc)
+                await interaction.followup.send(
+                    f"保存登录态失败: {exc}",
+                    ephemeral=True,
+                )
+
+        @self.tree.command(name="登录态列表", description="查看已保存的浏览器登录态")
+        async def browser_profiles(interaction: discord.Interaction) -> None:
+            from app.infra.browser_client import list_profiles
+
+            profiles = list_profiles()
+            if profiles:
+                text = "已保存的登录态:\n" + "\n".join(f"  • {p}" for p in profiles)
+            else:
+                text = "还没有保存任何登录态。"
+            await interaction.response.send_message(text, ephemeral=True)
+
     def apply_settings(self, settings: Settings) -> None:
         old_token = self.settings.discord_bot_token
         self.settings = settings
