@@ -621,15 +621,41 @@ class DiscordBot:
         messages = list(prior_messages) if prior_messages else []
         messages.append({"role": "user", "content": search_block})
 
+        # Check if LLM wants another search round — if so, skip reply and continue
+        next_depth = search_depth + 1
+        wants_more = next_depth < 3  # only offer tools if under limit
         try:
             async with channel.typing():
                 search_response = await asyncio.to_thread(
-                    self.reply_service.generate_reply_with_tools, messages, include_tools=True,
+                    self.reply_service.generate_reply_with_tools, messages, include_tools=wants_more,
                 )
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "search follow-up api request failed", exc=exc)
             return
 
+        # If LLM issued another web_search, don't reply yet — recurse with accumulated context
+        next_search = next(
+            (tc for tc in search_response.tool_calls if tc.name == "web_search" and tc.input.get("query")),
+            None,
+        )
+        if next_search and next_depth < 3:
+            self.logger.info(f"🔍 search_continue depth={next_depth} next_query={next_search.input['query']}")
+            # Handle non-search tool calls (e.g. set_timer) before continuing
+            for tc in search_response.tool_calls:
+                if tc.name == "set_timer":
+                    seconds = tc.input.get("seconds", 0)
+                    reason = tc.input.get("reason") or None
+                    if isinstance(seconds, (int, float)) and seconds > 0:
+                        if reason:
+                            self._schedule_alarm(channel_id, channel, seconds, reason)
+                        else:
+                            self._schedule_variable_timer(channel_id, channel, seconds, source="llm")
+            await self._execute_search(
+                next_search.input["query"], channel_id, channel, messages, search_depth=next_depth,
+            )
+            return
+
+        # Final round — send reply
         reply = (search_response.text or "").strip()
         if reply:
             try:
@@ -644,7 +670,7 @@ class DiscordBot:
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send search reply", exc=exc)
 
-        await self._handle_tool_calls(search_response, channel_id, channel, prior_messages=messages, search_depth=search_depth + 1)
+        await self._handle_tool_calls(search_response, channel_id, channel, prior_messages=messages, search_depth=next_depth)
 
     def _schedule_variable_timer(
         self,
