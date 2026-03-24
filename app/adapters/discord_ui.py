@@ -435,6 +435,35 @@ class ProactiveToolboxView(discord.ui.View):
 # Sub-panel: 聊天控制
 # ---------------------------------------------------------------------------
 
+class ContextEntriesModal(discord.ui.Modal, title="上下文条数"):
+    def __init__(self, bot: DiscordBot):
+        super().__init__()
+        self.bot = bot
+        env_values = read_env_values()
+        current = bot.settings
+        self.entries = discord.ui.TextInput(
+            label="主动/闹钟/吃醋等场景的上下文条数",
+            default=env_values.get(
+                "CONTEXT_ENTRIES",
+                str(current.context_entries),
+            ),
+            required=True,
+            max_length=5,
+            placeholder="默认 20",
+        )
+        self.add_item(self.entries)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        update_env_values(
+            {"CONTEXT_ENTRIES": self.entries.value.strip()}
+        )
+        await self.bot.reload_settings_if_needed()
+        await interaction.response.edit_message(
+            content=f"聊天控制\n\n上下文条数已设为 {self.entries.value.strip()}。",
+            view=ChatControlView(self.bot),
+        )
+
+
 class ChatControlView(discord.ui.View):
     def __init__(self, bot: DiscordBot):
         super().__init__(timeout=300)
@@ -480,6 +509,10 @@ class ChatControlView(discord.ui.View):
             content=f"聊天控制\n\n已切换为{label}",
             view=ChatControlView(self.bot),
         )
+
+    @discord.ui.button(label="上下文条数", style=discord.ButtonStyle.secondary)
+    async def context_entries(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(ContextEntriesModal(self.bot))
 
     @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

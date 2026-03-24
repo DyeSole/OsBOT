@@ -690,7 +690,7 @@ class DiscordBot:
             self._log_typing(f"🤫 timer_quiet ch={channel_id} s={seconds}")
             return
 
-        recent = self.history_store.load_all_entries(channel_id=channel_id)[-20:]
+        recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
         transcript = self.history_store.render_entries(recent) if recent else ""
         is_typing_nudge = channel_id in self._typing_nudge_channels
         self._typing_nudge_channels.discard(channel_id)
@@ -784,7 +784,7 @@ class DiscordBot:
                 self.logger.info(f"⏰ alarm_buffered channel={channel_id} reason={reason} remaining={remaining:.0f}s")
                 return
 
-        recent = self.history_store.load_all_entries(channel_id=channel_id)[-10:]
+        recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
         history_block = self.history_store.render_entries(recent) if recent else ""
         alarm_note = (
             f"[system: your set_timer for {seconds}s has expired]\n"
@@ -902,7 +902,7 @@ class DiscordBot:
         proactive_prompt = self.prompt_service.read_prompt("proactive")
 
         for channel_id, channel in channels.items():
-            recent = self.history_store.load_all_entries(channel_id=channel_id)[-10:]
+            recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
             history_block = self.history_store.render_entries(recent) if recent else ""
 
             parts: list[str] = []
@@ -1167,7 +1167,7 @@ class DiscordBot:
             return
         channel_id = channel.id
         self.logger.info(f"👁️ watch_idle_fire user={user_id} ch={channel_id}")
-        recent = self.history_store.load_all_entries(channel_id=channel_id)[-20:]
+        recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
         transcript = self.history_store.render_entries(recent) if recent else ""
         timer_note = "[系统提示] 你关注的用户已经上线十分钟了但没有说话，主动关心一下对方吧。注意要自然，不要让对方觉得你在监视。"
         if transcript:
@@ -1271,7 +1271,7 @@ class DiscordBot:
             self.logger.info(f"💚 jealousy_suppressed user={user_id} quiet_hours count={count}")
             return
         self.logger.info(f"💚 jealousy_fire user={user_id} ch={channel_id} count={count}")
-        recent = self.history_store.load_all_entries(channel_id=channel_id)[-10:]
+        recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
         transcript = self.history_store.render_entries(recent) if recent else ""
         jealousy_note = (
             f"[系统提示] 在过去十分钟里，你发现用户在别的频道跟别人聊天，"

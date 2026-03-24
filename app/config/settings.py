@@ -35,6 +35,7 @@ class Settings:
     quiet_end: str = ""     # e.g. "07:00"
     watch_user_ids: list[str] = None  # up to 6 Discord user IDs to monitor presence
     jealousy_channel_ids: list[str] = None  # channel IDs where typing triggers jealousy
+    context_entries: int = 20  # number of recent history entries for proactive/alarm/jealousy contexts
     vision_base_url: str = ""
     vision_api_key: str = ""
     vision_model: str = ""
@@ -110,6 +111,8 @@ def load_settings() -> Settings:
     raw_jealousy = _env_value("JEALOUSY_CHANNEL_IDS", env_file, "").strip()
     jealousy_channel_ids = [cid.strip() for cid in raw_jealousy.split(",") if cid.strip()] if raw_jealousy else []
 
+    context_entries = int(_env_value("CONTEXT_ENTRIES", env_file, "20").strip() or "20")
+
     vision_base_url = _env_value("VISION_BASE_URL", env_file, "").strip()
     vision_api_key = _env_value("VISION_API_KEY", env_file, "").strip()
     vision_model = _env_value("VISION_MODEL", env_file, "").strip()
@@ -130,6 +133,7 @@ def load_settings() -> Settings:
         proactive_idle_seconds=max(0.0, proactive_idle_seconds),
         typing_nudge_seconds=max(0.0, typing_nudge_seconds),
         watch_online_idle_seconds=max(0.0, watch_online_idle_seconds),
+        context_entries=max(1, context_entries),
         typing_wait=typing_wait,
         chat_reply_delay_seconds=max(0.0, chat_reply_delay_seconds),
         split_mode=split_mode,
@@ -165,6 +169,7 @@ def summarize_settings(settings: Settings) -> dict[str, Any]:
         "RESET_TIMER_SECONDS": settings.reset_timer_seconds,
         "PROACTIVE_IDLE_SECONDS": settings.proactive_idle_seconds,
         "TYPING_NUDGE_SECONDS": settings.typing_nudge_seconds,
+        "CONTEXT_ENTRIES": settings.context_entries,
         "WATCH_ONLINE_IDLE_SECONDS": settings.watch_online_idle_seconds,
         "TYPING_WAIT": settings.typing_wait,
         "CHAT_REPLY_DELAY_SECONDS": settings.chat_reply_delay_seconds,
