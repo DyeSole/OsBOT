@@ -1271,7 +1271,7 @@ class DiscordBot:
             self.logger.info(f"💚 jealousy_suppressed user={user_id} quiet_hours count={count}")
             return
         self.logger.info(f"💚 jealousy_fire user={user_id} ch={channel_id} count={count}")
-        recent = self.history_store.load_all_entries(channel_id=channel_id)[-20:]
+        recent = self.history_store.load_all_entries(channel_id=channel_id)[-10:]
         transcript = self.history_store.render_entries(recent) if recent else ""
         jealousy_note = (
             f"[系统提示] 在过去十分钟里，你发现用户在别的频道跟别人聊天，"
