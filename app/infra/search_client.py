@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+
 from duckduckgo_search import DDGS
+
+# Limit concurrent browser-heavy operations (e.g. future Playwright usage).
+# DuckDuckGo HTTP search is lightweight, but this protects against memory
+# spikes if browser-based fetching is added later.
+_browser_semaphore = asyncio.Semaphore(1)
 
 
 def web_search(query: str, *, max_results: int = 5) -> list[dict[str, str]]:
@@ -18,3 +25,9 @@ def web_search(query: str, *, max_results: int = 5) -> list[dict[str, str]]:
         }
         for r in raw
     ]
+
+
+async def browser_fetch(coro):
+    """Run a browser-heavy coroutine with concurrency=1 to protect memory."""
+    async with _browser_semaphore:
+        return await coro
