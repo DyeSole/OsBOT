@@ -14,10 +14,11 @@ def web_search(
     base_url: str = "",
     api_key: str = "",
     model: str = "",
+    context: str = "",
 ) -> list[dict[str, str]]:
     """Search the web. Uses Grok/xAI if configured, otherwise DuckDuckGo."""
     if base_url and api_key:
-        return _grok_search(query, base_url=base_url, api_key=api_key, model=model, max_results=max_results)
+        return _grok_search(query, base_url=base_url, api_key=api_key, model=model, max_results=max_results, context=context)
     return _ddg_search(query, max_results=max_results)
 
 
@@ -41,22 +42,24 @@ def _grok_search(
     api_key: str,
     model: str = "",
     max_results: int = 5,
+    context: str = "",
 ) -> list[dict[str, str]]:
     """Use Grok/xAI API with web search to get results."""
     client = OpenAI(base_url=base_url, api_key=api_key)
     use_model = model or "grok-3-mini-fast"
 
+    system_prompt = (
+        f"你是一个搜索助手。请根据用户的搜索关键词进行联网搜索，返回最多{max_results}条结果。"
+        "必须严格按以下JSON格式返回，不要包含其他内容：\n"
+        '[{"title": "标题", "href": "链接URL", "body": "摘要"}]'
+    )
+    if context:
+        system_prompt += f"\n\n以下是用户最近的聊天记录，帮助你理解搜索意图：\n{context}"
+
     response = client.chat.completions.create(
         model=use_model,
         messages=[
-            {
-                "role": "system",
-                "content": (
-                    f"你是一个搜索助手。请根据用户的搜索关键词进行联网搜索，返回最多{max_results}条结果。"
-                    "必须严格按以下JSON格式返回，不要包含其他内容：\n"
-                    '[{"title": "标题", "href": "链接URL", "body": "摘要"}]'
-                ),
-            },
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": query},
         ],
         search_mode="auto",

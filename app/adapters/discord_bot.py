@@ -608,6 +608,10 @@ class DiscordBot:
         from app.infra.search_client import web_search
 
         self.logger.info(f"🔍 web_search query={query} depth={search_depth}")
+        # Build recent context: short hint for Grok, longer for main LLM
+        grok_recent = self.history_store.load_all_entries(channel_id=channel_id)[-10:]
+        context_hint = self.history_store.render_entries(grok_recent) if grok_recent else ""
+        recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
         try:
             results = await asyncio.to_thread(
                 web_search,
@@ -615,6 +619,7 @@ class DiscordBot:
                 base_url=self.settings.search_base_url,
                 api_key=self.settings.search_api_key,
                 model=self.settings.search_model,
+                context=context_hint,
             )
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "web search failed", exc=exc)
@@ -631,8 +636,10 @@ class DiscordBot:
         else:
             search_block = f"[搜索结果: {query}]\n未找到相关结果。"
 
-        messages = list(prior_messages) if prior_messages else []
-        messages.append({"role": "user", "content": search_block})
+        # Build context for LLM: recent history (context_entries) + search results
+        recent_block = self.history_store.render_entries(recent) if recent else ""
+        context_parts = [p for p in [recent_block, search_block] if p]
+        messages = [{"role": "user", "content": "\n\n".join(context_parts)}]
 
         # Check if LLM wants another search round — if so, skip reply and continue
         next_depth = search_depth + 1
