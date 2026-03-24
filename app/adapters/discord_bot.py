@@ -1264,11 +1264,19 @@ class DiscordBot:
             return []
 
         IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+        # Check if any image attachments exist before sending status
+        has_images = any(
+            (att.content_type or "").split(";")[0].strip().lower() in IMAGE_TYPES
+            for att in message.attachments
+        )
+        if not has_images:
+            return []
+
+        status_msg = await message.channel.send("正在识图...")
         descriptions: list[str] = []
 
         for att in message.attachments:
             ct = att.content_type or ""
-            # Normalize: "image/png; charset=utf-8" → "image/png"
             media_type = ct.split(";")[0].strip().lower()
             if media_type not in IMAGE_TYPES:
                 continue
@@ -1281,6 +1289,11 @@ class DiscordBot:
                     descriptions.append(f"[图片: {desc}]")
             except Exception:
                 self.logger.error("VISION", f"failed to describe attachment {att.filename}")
+
+        try:
+            await status_msg.delete()
+        except Exception:  # noqa: BLE001
+            pass
 
         return descriptions
 
