@@ -11,6 +11,7 @@ PROMPT_TARGETS = {
     "compression": PROMPTS_DIR / "compression.txt",
     "proactive": PROMPTS_DIR / "proactive.txt",
     "morning": PROMPTS_DIR / "morning.txt",
+    "typing_nudge": PROMPTS_DIR / "typing_nudge.txt",
 }
 
 
