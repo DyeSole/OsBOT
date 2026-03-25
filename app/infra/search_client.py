@@ -62,7 +62,7 @@ def _grok_search(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": query},
         ],
-        tools=[{"type": "web_search"}, {"type": "x_search"}],
+        extra_body={"tools": [{"type": "web_search"}, {"type": "x_search"}]},
     )
 
     text = (response.choices[0].message.content or "").strip()
