@@ -445,9 +445,9 @@ class JealousyChannelsModal(discord.ui.Modal, title="频道偷窥"):
         super().__init__()
         self.bot = bot
         ids = bot.settings.jealousy_channel_ids
-        padded = (ids + [""] * 5)[:5]
+        padded = (ids + [""] * 4)[:4]
         self.slots: list[discord.ui.TextInput] = []
-        for i in range(5):
+        for i in range(4):
             inp = discord.ui.TextInput(
                 label=f"频道 ID {i + 1}",
                 default=padded[i],
@@ -457,10 +457,21 @@ class JealousyChannelsModal(discord.ui.Modal, title="频道偷窥"):
             )
             self.slots.append(inp)
             self.add_item(inp)
+        self.prompt = discord.ui.TextInput(
+            label="偷窥提示词（{count}=消息条数）",
+            style=discord.TextStyle.paragraph,
+            default=bot.prompt_service.read_prompt("jealousy").strip()[:4000],
+            required=True,
+            max_length=4000,
+        )
+        self.add_item(self.prompt)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         ids = [s.value.strip() for s in self.slots if s.value.strip()]
         update_env_values({"JEALOUSY_CHANNEL_IDS": ",".join(ids)})
+        self.bot.prompt_service.write_prompt(
+            target="jealousy", content=self.prompt.value,
+        )
         await self.bot.reload_settings_if_needed()
         id_list = "\n".join(f"  {cid}" for cid in ids) if ids else "  （无）"
         await interaction.response.edit_message(

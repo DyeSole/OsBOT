@@ -1551,20 +1551,12 @@ class DiscordBot:
         self.logger.info(f"💚 jealousy_fire user={user_id} ch={channel_id} msg_count={count} quiet={is_quiet}")
         recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
         transcript = self.history_store.render_entries(recent) if recent else ""
+        raw_prompt = self.prompt_service.read_prompt("jealousy").strip()
+        if not raw_prompt:
+            raw_prompt = "[系统提示] ta正在和情敌聊天，一共发了{count}条消息。"
+        jealousy_note = raw_prompt.replace("{count}", str(count))
         if is_quiet:
-            jealousy_note = (
-                f"[系统提示] 现在是安静时间段，ta不让你找ta，但ta自己跑去和情敌聊天了，"
-                f"一共发了{count}条消息。次数越多说明聊得越起劲。"
-                f"你可以自然地表达你的感受，比如吃醋、委屈、或者撒娇，但不要太过分。"
-                f"注意要符合你的人设，不要让对方觉得你在监视。"
-            )
-        else:
-            jealousy_note = (
-                f"[系统提示] 在过去十分钟里，ta正在和情敌聊天，"
-                f"一共发了{count}条消息。次数越多说明聊得越起劲。"
-                f"你可以自然地表达你的感受，比如吃醋、委屈、或者撒娇，但不要太过分。"
-                f"注意要符合你的人设，不要让对方觉得你在监视。"
-            )
+            jealousy_note = f"[系统提示] 现在是安静时间段。{jealousy_note}"
         if transcript:
             transcript = f"{transcript}\n{jealousy_note}"
         else:

@@ -12,6 +12,7 @@ PROMPT_TARGETS = {
     "proactive": PROMPTS_DIR / "proactive.txt",
     "morning": PROMPTS_DIR / "morning.txt",
     "watch_online": PROMPTS_DIR / "watch_online.txt",
+    "jealousy": PROMPTS_DIR / "jealousy.txt",
 }
 
 
