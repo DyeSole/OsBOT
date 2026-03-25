@@ -1399,8 +1399,8 @@ class DiscordBot:
             )
 
     async def _jealousy_delayed_fire(self, user_id: int, channel: discord.abc.Messageable) -> None:
-        """Wait 10 minutes, then send accumulated typing count to the LLM."""
-        await asyncio.sleep(600)
+        """Wait briefly, then send accumulated typing count to the LLM."""
+        await asyncio.sleep(30)
         self._jealousy_timers.pop(user_id, None)
         count = self._jealousy_counts.pop(user_id, 0)
         if count == 0:
