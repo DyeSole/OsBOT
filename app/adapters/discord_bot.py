@@ -740,11 +740,17 @@ class DiscordBot:
         )
         if next_search and next_depth < 3:
             self.logger.info(f"🔍 search_continue depth={next_depth} next_query={next_search.input['query']}")
-            # Edit intermediate text onto edit_msg (e.g. "再确认一下...")
+            # Append intermediate text onto edit_msg (e.g. "再确认一下...")
             intermediate = (search_response.text or "").strip()
             if intermediate and edit_msg:
                 try:
-                    await edit_msg.edit(content=intermediate)
+                    existing = edit_msg.content or ""
+                    combined = f"{existing}\n{intermediate}" if existing else intermediate
+                    if len(combined) <= 2000:
+                        await edit_msg.edit(content=combined)
+                    else:
+                        # Too long to fit in one message; send new and update edit_msg
+                        await self._reply_by_sentence(None, intermediate, channel=channel)
                 except Exception:  # noqa: BLE001
                     pass
             self._process_timer_calls(search_response.tool_calls, channel_id, channel)
@@ -754,18 +760,19 @@ class DiscordBot:
             )
             return
 
-        # Final round — edit the result onto edit_msg, or send new if no edit_msg
+        # Final round — append the result onto edit_msg, or send new if no edit_msg
         reply = (search_response.text or "").strip()
         if reply:
             try:
-                if edit_msg and len(reply) <= 2000:
-                    await edit_msg.edit(content=reply)
+                if edit_msg:
+                    existing = edit_msg.content or ""
+                    combined = f"{existing}\n{reply}" if existing else reply
+                    if len(combined) <= 2000:
+                        await edit_msg.edit(content=combined)
+                    else:
+                        # Can't fit in one message; send as new message(s)
+                        await self._reply_by_sentence(None, reply, channel=channel)
                 else:
-                    if edit_msg:
-                        try:
-                            await edit_msg.delete()
-                        except Exception:  # noqa: BLE001
-                            pass
                     await self._reply_by_sentence(None, reply, channel=channel)
                 self.history_store.append_entry(
                     channel_id=channel_id,
