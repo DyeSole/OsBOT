@@ -550,7 +550,7 @@ class DiscordBot:
             )
             # Handle tool calls from LLM
             edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
-            await self._handle_tool_calls(response, channel_id, pending.channel, prior_messages=messages, edit_msg=edit_msg)
+            await self._handle_tool_calls(response, channel_id, pending.channel, prior_messages=messages, edit_msg=edit_msg, had_reply=bool(reply))
             # Start proactive idle timer after bot replies
             self._schedule_proactive(channel_id, pending.channel)
         except Exception as exc:  # noqa: BLE001
@@ -613,7 +613,7 @@ class DiscordBot:
                     content=reply,
                 )
             edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
-            await self._handle_tool_calls(response, channel_id, message.channel, prior_messages=messages, edit_msg=edit_msg)
+            await self._handle_tool_calls(response, channel_id, message.channel, prior_messages=messages, edit_msg=edit_msg, had_reply=bool(reply))
             self._schedule_proactive(channel_id, message.channel)
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "failed to send reply", exc=exc)
@@ -631,8 +631,9 @@ class DiscordBot:
         tool_calls: list,
         channel_id: int,
         channel: discord.abc.Messageable,
-    ) -> None:
-        """Handle set_timer tool calls."""
+    ) -> list[tuple[float, str | None]]:
+        """Handle set_timer tool calls. Returns list of (seconds, reason) for each alarm set."""
+        alarms_set: list[tuple[float, str | None]] = []
         for tc in tool_calls:
             if tc.name == "set_timer":
                 seconds = tc.input.get("seconds", 0)
@@ -640,8 +641,10 @@ class DiscordBot:
                 if isinstance(seconds, (int, float)) and seconds > 0:
                     if reason:
                         self._schedule_alarm(channel_id, channel, seconds, reason)
+                        alarms_set.append((seconds, reason))
                     else:
                         self._schedule_variable_timer(channel_id, channel, seconds, source="llm")
+        return alarms_set
 
     async def _handle_tool_calls(
         self,
@@ -652,9 +655,30 @@ class DiscordBot:
         prior_messages: list[dict[str, str]] | None = None,
         search_depth: int = 0,
         edit_msg: discord.Message | None = None,
+        had_reply: bool = True,
     ) -> None:
         """Process tool calls returned by the LLM."""
-        self._process_timer_calls(response.tool_calls, channel_id, channel)
+        alarms_set = self._process_timer_calls(response.tool_calls, channel_id, channel)
+        # If the LLM set an alarm but produced no visible reply, send a fallback confirmation
+        if alarms_set and not had_reply:
+            for seconds, reason in alarms_set:
+                mins = seconds / 60
+                if mins >= 1:
+                    time_str = f"{mins:.0f}分钟"
+                else:
+                    time_str = f"{seconds:.0f}秒"
+                confirm = f"⏰ 好的，{time_str}后提醒你：{reason}" if reason else f"⏰ 好的，{time_str}后提醒你"
+                try:
+                    await channel.send(confirm, allowed_mentions=AllowedMentions.none())
+                    self.history_store.append_entry(
+                        channel_id=channel_id,
+                        role="assistant",
+                        username=self.settings.bot_key,
+                        time=self._now_clock(),
+                        content=confirm,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
         for tc in response.tool_calls:
             if tc.name == "web_search":
                 query = tc.input.get("query", "")
@@ -928,12 +952,12 @@ class DiscordBot:
             self.logger.info(f"🤫 alarm_buffered_quiet channel={channel_id} reason={reason}")
             return
 
-        # If a variable/proactive timer is about to fire soon, buffer this alarm
+        # If a variable/proactive timer is about to fire very soon (<30s), buffer this alarm
         vt = self._variable_timers.get(channel_id)
         if vt is not None:
             _, deadline = vt
             remaining = deadline - time.monotonic()
-            if remaining < self.proactive_idle_seconds:
+            if 0 < remaining < 30:
                 self._pending_alarm_reasons.setdefault(channel_id, []).append(reason)
                 self.logger.info(f"⏰ alarm_buffered channel={channel_id} reason={reason} remaining={remaining:.0f}s")
                 return
