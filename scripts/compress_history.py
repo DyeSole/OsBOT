@@ -33,10 +33,7 @@ def main() -> int:
         return 0
 
     print("compression complete")
-    print(f"segment_id: {segment['segment_id']}")
-    print(f"source_id: {segment['source_id']}")
     print(f"range: {segment['start_time']} -> {segment['end_time']}")
-    print(f"message_count: {segment['message_count']}")
     print(f"keywords: {segment['keywords']}")
     return 0
 

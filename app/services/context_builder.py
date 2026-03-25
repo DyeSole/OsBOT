@@ -36,7 +36,7 @@ class ContextBuilder:
         return max(1, len(text) // 4)
 
     def _render_summary_block(self, *, channel_id: int) -> str:
-        segments = self.compression_store.load_summary_segments(channel_id=channel_id)
+        segments = self.compression_store.load_segments(channel_id=channel_id)
         if not segments:
             return ""
 
