@@ -409,7 +409,7 @@ class VisionClient:
                 self._request_url(),
                 headers=self._headers(),
                 json=payload,
-                timeout=30,
+                timeout=120,
             )
             if resp.status_code >= 400:
                 log.warning("vision api http %d: %s", resp.status_code, resp.text[:200])
