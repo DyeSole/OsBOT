@@ -825,6 +825,11 @@ class DiscordBot:
         await asyncio.sleep(seconds)
         self._variable_timers.pop(channel_id, None)
 
+        # Skip jealousy (read-only) channels — bot has no send permission there
+        if self.settings.jealousy_channel_ids and str(channel_id) in self.settings.jealousy_channel_ids:
+            self._log_typing(f"💚 timer_skip_jealousy ch={channel_id}")
+            return
+
         # During quiet hours, discard proactive/variable timer fires silently
         if self._is_quiet_time():
             self._quiet_channels.setdefault(channel_id, channel)
