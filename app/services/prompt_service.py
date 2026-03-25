@@ -11,6 +11,7 @@ PROMPT_TARGETS = {
     "compression": PROMPTS_DIR / "compression.txt",
     "proactive": PROMPTS_DIR / "proactive.txt",
     "morning": PROMPTS_DIR / "morning.txt",
+    "watch_online": PROMPTS_DIR / "watch_online.txt",
 }
 
 

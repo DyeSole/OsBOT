@@ -321,10 +321,19 @@ class WatchOnlineTimeModal(discord.ui.Modal, title="上线监听"):
             max_length=10,
         )
         self.add_item(self.idle_seconds)
+        self.prompt = discord.ui.TextInput(
+            label="上线提示词（{minutes}=分钟数）",
+            style=discord.TextStyle.paragraph,
+            default=bot.prompt_service.read_prompt("watch_online").strip()
+                or "[系统提示] 你关注的用户已经上线{minutes}分钟了但没有说话，跟他主动说句话。",
+            required=False,
+            max_length=500,
+        )
+        self.add_item(self.prompt)
         ids = current.watch_user_ids
-        padded = (ids + [""] * 4)[:4]
+        padded = (ids + [""] * 3)[:3]
         self.user_slots: list[discord.ui.TextInput] = []
-        for i in range(4):
+        for i in range(3):
             inp = discord.ui.TextInput(
                 label=f"监听用户 ID {i + 1}",
                 default=padded[i],
@@ -341,6 +350,9 @@ class WatchOnlineTimeModal(discord.ui.Modal, title="上线监听"):
             "WATCH_ONLINE_IDLE_SECONDS": self.idle_seconds.value.strip(),
             "WATCH_USER_IDS": ",".join(ids),
         })
+        self.bot.prompt_service.write_prompt(
+            target="watch_online", content=self.prompt.value,
+        )
         await self.bot.reload_settings_if_needed()
         id_list = "\n".join(f"  {uid}" for uid in ids) if ids else "  （无）"
         await interaction.response.edit_message(

@@ -1400,7 +1400,10 @@ class DiscordBot:
         recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
         transcript = self.history_store.render_entries(recent) if recent else ""
         minutes = int(self.watch_online_idle_seconds // 60) or 1
-        timer_note = f"[系统提示] 你关注的用户已经上线{minutes}分钟了但没有说话，跟他主动说句话。"
+        raw_prompt = self.prompt_service.read_prompt("watch_online")
+        if not raw_prompt.strip():
+            raw_prompt = "[系统提示] 你关注的用户已经上线{minutes}分钟了但没有说话，跟他主动说句话。"
+        timer_note = raw_prompt.strip().replace("{minutes}", str(minutes))
         if transcript:
             transcript = f"{transcript}\n{timer_note}"
         else:
