@@ -411,10 +411,6 @@ class DiscordBot:
         *,
         include_tools: bool = False,
     ) -> tuple[LLMResponse, list[discord.Message]]:
-        """Stream LLM response, sending each sentence to Discord as it completes.
-
-        Returns (LLMResponse, list_of_sent_discord_messages).
-        """
         from app.infra.llm_client import LLMResponse
 
         q: _queue.Queue[tuple[str, object]] = _queue.Queue()
@@ -436,10 +432,9 @@ class DiscordBot:
         is_first = True
         sent_msgs: list[discord.Message] = []
         is_novel = self.settings.split_mode == "novel"
-        # Novel mode: stream into a single message via edits
         novel_msg: discord.Message | None = None
-        novel_full = ""  # accumulated full text for novel mode
-        novel_last_edit = 0.0  # throttle edits
+        novel_full = ""
+        novel_last_edit = 0.0
 
         while True:
             try:
@@ -453,7 +448,6 @@ class DiscordBot:
                 if is_novel:
                     novel_full += value
                     now = asyncio.get_event_loop().time()
-                    # Throttle edits to avoid rate limits (~every 1s)
                     if now - novel_last_edit >= 1.0:
                         display = novel_full.strip()
                         if display:
@@ -472,7 +466,6 @@ class DiscordBot:
                                 elif len(display) <= 2000:
                                     await novel_msg.edit(content=display)
                                 else:
-                                    # Overflow: finalize current msg, start a new one
                                     novel_full = value
                                     novel_msg = await channel.send(
                                         value.strip() or "...",
@@ -504,7 +497,6 @@ class DiscordBot:
                         buffer = parts[-1]
             elif kind == "done":
                 if is_novel:
-                    # Final edit with complete text
                     display = novel_full.strip()
                     if display:
                         try:
@@ -562,7 +554,6 @@ class DiscordBot:
         return str(getattr(user, "id", "unknown"))
 
     def _touch_typing_session(self, channel_id: int, user_id: int, *, channel_label: str, user_label: str) -> bool:
-        """Track typing. Returns True if this is a *new* typing session."""
         key = self._typing_key(channel_id, user_id)
         now = time.monotonic()
         session = self._typing_sessions.get(key)
@@ -696,7 +687,6 @@ class DiscordBot:
             self._log_typing(
                 f"🚀 api_sent user={pending.user_label} chunks={len(pending.chunks)} merged_len={len(merged_text)}"
             )
-            # Handle tool calls from LLM
             edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
             await self._handle_tool_calls(
                 response,
@@ -707,10 +697,8 @@ class DiscordBot:
                 had_reply=bool(reply),
                 source_message=pending.anchor_message,
             )
-            # Start proactive idle timer after bot replies
             self._schedule_proactive(channel_id, pending.channel)
         except Exception as exc:  # noqa: BLE001
-            # Keep this as UNKNOWN to preserve your current error filtering behavior.
             self.logger.error("UNKNOWN", "failed to send reply", exc=exc)
             try:
                 await pending.anchor_message.reply(
@@ -722,7 +710,6 @@ class DiscordBot:
                 await pending.channel.send("我刚刚有点卡住了，等我一下再试试。")
 
     async def _reply_immediate(self, message: discord.Message, text: str) -> None:
-        """Skip typing-wait; build context and call API right away."""
         channel_id = message.channel.id
         user_label = self._user_label(message.author)
         now_clock = self._now_clock()
@@ -796,7 +783,6 @@ class DiscordBot:
         channel_id: int,
         channel: discord.abc.Messageable,
     ) -> list[tuple[float, str | None]]:
-        """Handle set_timer tool calls. Returns list of (seconds, reason) for each alarm set."""
         alarms_set: list[tuple[float, str | None]] = []
         for tc in tool_calls:
             if tc.name == "set_timer":
@@ -822,9 +808,7 @@ class DiscordBot:
         had_reply: bool = True,
         source_message: discord.Message | None = None,
     ) -> None:
-        """Process tool calls returned by the LLM."""
         alarms_set = self._process_timer_calls(response.tool_calls, channel_id, channel)
-        # If the LLM set an alarm but produced no visible reply, send a fallback confirmation
         if alarms_set and not had_reply:
             for seconds, reason in alarms_set:
                 mins = seconds / 60
@@ -875,12 +859,6 @@ class DiscordBot:
         search_depth: int = 0,
         edit_msg: discord.Message | None = None,
     ) -> None:
-        """Run a web search and feed results back to the LLM for a final reply.
-
-        If edit_msg is provided, intermediate/final replies are edited onto that
-        message instead of sending new messages.  Only the final result is saved
-        to history.
-        """
         from app.infra.search_client import web_search
         from app.services.reply_service import load_system_prompt
 
@@ -913,21 +891,17 @@ class DiscordBot:
         else:
             search_block = f"[搜索结果: {query}]\n未找到相关结果。"
 
-        # Build context for LLM: recent history + accumulated search results
         if search_depth == 0:
             recent = recent_entries[-self.settings.context_entries:]
             recent_block = self.history_store.render_entries(recent) if recent else ""
             context_parts = [p for p in [recent_block, search_block] if p]
             messages = [{"role": "user", "content": "\n\n".join(context_parts)}]
         else:
-            # Subsequent rounds: append new search results to prior context
-            # (prior_messages already contains history + previous search results)
             messages = list(prior_messages) if prior_messages else []
             messages.append({"role": "user", "content": search_block})
 
-        # Check if LLM wants another search round — if so, skip reply and continue
         next_depth = search_depth + 1
-        wants_more = next_depth < 3  # only offer tools if under limit
+        wants_more = next_depth < 3
         try:
             async with channel.typing():
                 search_response = await asyncio.to_thread(
@@ -937,14 +911,12 @@ class DiscordBot:
             self.logger.error("UNKNOWN", "search follow-up api request failed", exc=exc)
             return
 
-        # If LLM issued another web_search, edit intermediate text onto edit_msg and recurse
         next_search = next(
             (tc for tc in search_response.tool_calls if tc.name == "web_search" and tc.input.get("query")),
             None,
         )
         if next_search and next_depth < 3:
             self.logger.info(f"🔍 search_continue depth={next_depth} next_query={next_search.input['query']}")
-            # Append intermediate text onto edit_msg (e.g. "再确认一下...")
             intermediate = (search_response.text or "").strip()
             if intermediate and edit_msg:
                 try:
@@ -953,7 +925,6 @@ class DiscordBot:
                     if len(combined) <= 2000:
                         await edit_msg.edit(content=combined)
                     else:
-                        # Too long to fit in one message; send new and update edit_msg
                         await self._reply_by_sentence(None, intermediate, channel=channel)
                 except Exception:  # noqa: BLE001
                     pass
@@ -964,7 +935,6 @@ class DiscordBot:
             )
             return
 
-        # Final round — append the result onto edit_msg, or send new if no edit_msg
         reply = (search_response.text or "").strip()
         if reply:
             try:
@@ -974,7 +944,6 @@ class DiscordBot:
                     if len(combined) <= 2000:
                         await edit_msg.edit(content=combined)
                     else:
-                        # Can't fit in one message; send as new message(s)
                         await self._reply_by_sentence(None, reply, channel=channel)
                 else:
                     await self._reply_by_sentence(None, reply, channel=channel)
@@ -998,8 +967,6 @@ class DiscordBot:
         *,
         source: str = "auto",
     ) -> None:
-        """Schedule a variable timer."""
-        # Cancel any existing variable timer for this channel
         old = self._variable_timers.pop(channel_id, None)
         if old is not None:
             task, _ = old
@@ -1020,7 +987,6 @@ class DiscordBot:
         seconds: float,
         reason: str,
     ) -> None:
-        """Schedule an alarm. Multiple alarms per channel; not cancelled by user messages."""
         task = asyncio.create_task(
             self._alarm_fire(channel_id, channel, seconds, reason)
         )
@@ -1032,16 +998,11 @@ class DiscordBot:
         channel: discord.abc.Messageable,
         seconds: float,
     ) -> None:
-        """Wait for the specified duration, then send context to AI."""
         await asyncio.sleep(seconds)
         self._variable_timers.pop(channel_id, None)
-
-        # Skip jealousy (read-only) channels — bot has no send permission there
         if self.settings.jealousy_channel_ids and str(channel_id) in self.settings.jealousy_channel_ids:
             self._log_typing(f"💚 timer_skip_jealousy ch={channel_id}")
             return
-
-        # During quiet hours, discard proactive/variable timer fires silently
         if self._is_quiet_time():
             self._quiet_channels.setdefault(channel_id, channel)
             self._schedule_quiet_flush()
@@ -1058,14 +1019,12 @@ class DiscordBot:
             timer_note = f"[system: your set_timer for {seconds}s has expired]\n{self.prompt_service.read_prompt('proactive')}"
         else:
             timer_note = f"[系统提示] {self.prompt_service.read_prompt('proactive')}"
-        # Attach any buffered alarm reasons
         pending_reasons = self._pending_alarm_reasons.pop(channel_id, [])
         if pending_reasons:
             alarm_lines = "\n".join(f"- {r}" for r in pending_reasons)
             timer_note += (
                 f"\n[system: 以下闹钟已到期，你必须提醒用户这些事情，不可以沉默]\n{alarm_lines}"
             )
-        # Attach any buffered reactions
         pending_reactions = self._pending_reactions.pop(channel_id, [])
         if pending_reactions:
             reaction_lines = "\n".join(f"- {r}" for r in pending_reactions)
@@ -1102,7 +1061,6 @@ class DiscordBot:
         else:
             self._log_typing(f"🔇 time_fire ch={channel_id}")
 
-        # Handle any new tool calls (e.g. AI sets another timer)
         await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
 
     async def _alarm_fire(
@@ -1112,19 +1070,16 @@ class DiscordBot:
         seconds: float,
         reason: str,
     ) -> None:
-        """Wait for the specified duration, then remind the user. Cannot be silent."""
         task = asyncio.current_task()
         try:
             await asyncio.sleep(seconds)
         finally:
-            # Remove ourselves from the alarm list
             alarm_list = self._alarms.get(channel_id, [])
             if task in alarm_list:
                 alarm_list.remove(task)
             if not alarm_list:
                 self._alarms.pop(channel_id, None)
 
-        # During quiet hours, buffer alarm for flush at quiet end
         if self._is_quiet_time():
             self._quiet_buffered_reasons.setdefault(channel_id, []).append(reason)
             self._quiet_channels[channel_id] = channel
@@ -1132,7 +1087,6 @@ class DiscordBot:
             self.logger.info(f"🤫 alarm_buffered_quiet channel={channel_id} reason={reason}")
             return
 
-        # If a variable/proactive timer is about to fire very soon (<30s), buffer this alarm
         vt = self._variable_timers.get(channel_id)
         if vt is not None:
             _, deadline = vt
@@ -1179,7 +1133,6 @@ class DiscordBot:
         await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
 
     def _schedule_proactive(self, channel_id: int, channel: discord.abc.Messageable) -> None:
-        """Schedule proactive idle timer — uses the same slot as variable timer."""
         self._typing_nudge_channels.discard(channel_id)
         if self.proactive_idle_seconds <= 0:
             return
@@ -1188,20 +1141,18 @@ class DiscordBot:
     def _maybe_schedule_typing_nudge(
         self, channel_id: int, channel: discord.abc.Messageable,
     ) -> None:
-        """Schedule a typing-nudge, but only if it's shorter than the current timer."""
         nudge = self.typing_nudge_seconds
         vt = self._variable_timers.get(channel_id)
         if vt is not None:
             _, deadline = vt
             remaining = deadline - time.monotonic()
             if remaining <= nudge:
-                return  # existing timer fires sooner, keep it
+                return
         self._typing_nudge_channels.add(channel_id)
         self._schedule_variable_timer(channel_id, channel, nudge, source="typing_nudge")
 
     @staticmethod
     def _parse_time(s: str) -> dt_time | None:
-        """Parse 'HH:MM' into a time object, or None on failure."""
         s = s.strip()
         if not s:
             return None
@@ -1212,7 +1163,6 @@ class DiscordBot:
             return None
 
     def _is_quiet_time(self) -> bool:
-        """Return True if quiet hours are active right now."""
         if not self.settings.quiet_enabled:
             return False
         start = self._parse_time(self.settings.quiet_start)
@@ -1222,35 +1172,29 @@ class DiscordBot:
         now = _now().time()
         if start <= end:
             return start <= now < end
-        # Crosses midnight, e.g. 23:00 -> 07:00
         return now >= start or now < end
 
     def _seconds_until_quiet_end(self) -> float:
-        """Return seconds until quiet_end. Assumes we are currently in quiet time."""
         end = self._parse_time(self.settings.quiet_end)
         if end is None:
             return 0.0
         now = _now()
         end_today = now.replace(hour=end.hour, minute=end.minute, second=0, microsecond=0)
         if end_today <= now:
-            # End is tomorrow
             from datetime import timedelta
             end_today += timedelta(days=1)
         return (end_today - now).total_seconds()
 
     def _schedule_quiet_flush(self) -> None:
-        """Ensure a flush task is scheduled for when quiet hours end."""
         if self._quiet_flush_task is not None and not self._quiet_flush_task.done():
-            return  # already scheduled
+            return
         wait = self._seconds_until_quiet_end()
         if wait <= 0:
             return
         self._quiet_flush_task = asyncio.create_task(self._quiet_flush_fire(wait))
 
     async def _quiet_flush_fire(self, wait_seconds: float) -> None:
-        """Sleep until quiet hours end, then send a morning message per channel."""
         await asyncio.sleep(wait_seconds)
-        # Drain state
         buffered = dict(self._quiet_buffered_reasons)
         channels = dict(self._quiet_channels)
         self._quiet_buffered_reasons.clear()
@@ -1267,7 +1211,6 @@ class DiscordBot:
             if history_block:
                 parts.append(history_block)
             parts.append(f"[system: 静默时间已结束]\n{morning_prompt}")
-            # Attach buffered alarms if any
             reasons = buffered.get(channel_id, [])
             if reasons:
                 alarm_lines = "\n".join(f"- {r}" for r in reasons)
@@ -1317,13 +1260,6 @@ class DiscordBot:
                 self._stop_typing_session(channel_id, user_id, reason="timeout")
 
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
-        """When a channel is deleted, clean up its data files.
-
-        Only removes data for the specific deleted channel instead of doing a
-        full orphan sweep, because ``guild.threads`` only contains *cached
-        active* threads — archived / inactive threads would be mistakenly
-        treated as orphans and have their data deleted.
-        """
         cid = channel.id
         self.logger.info(f"🗑️ channel_deleted id={cid} name={getattr(channel, 'name', '?')}")
         h = self.history_store.delete_channel(cid)
@@ -1336,38 +1272,30 @@ class DiscordBot:
         channel: discord.abc.Messageable,
         anchor: discord.Message,
     ) -> list[discord.Message] | None:
-        """Find the full batch of consecutive bot messages around the anchor.
-
-        Returns the batch if it is the last reply in the channel (no user
-        messages after it), otherwise returns None.
-        """
         bot_id = self.client.user.id  # type: ignore[union-attr]
         batch = [anchor]
-        # Scan backward: collect consecutive bot messages before the anchor
         async for msg in channel.history(before=anchor, limit=50):  # type: ignore[union-attr]
             if msg.author.id == bot_id:
                 batch.append(msg)
             else:
                 break
-        # Scan forward: collect consecutive bot messages after the anchor
         async for msg in channel.history(after=anchor, limit=50):  # type: ignore[union-attr]
             if msg.author.id == bot_id:
                 batch.append(msg)
             else:
-                return None  # not the last reply — user message found after batch
+                return None
         return batch
 
     async def _delete_messages(self, messages: list[discord.Message]) -> None:
         if not messages:
             return
         channel = messages[0].channel
-        # bulk delete is much faster (one API call for up to 100 messages)
         if hasattr(channel, "delete_messages") and len(messages) > 1:
             try:
                 await channel.delete_messages(messages)  # type: ignore[union-attr]
                 return
             except Exception:  # noqa: BLE001
-                pass  # fallback to one-by-one
+                pass
         for msg in messages:
             try:
                 await msg.delete()
@@ -1375,7 +1303,6 @@ class DiscordBot:
                 pass
 
     def _delete_bot_reply_db(self, channel_id: int) -> None:
-        """Delete the last assistant entry from DB."""
         self.history_store.pop_last_by_role(channel_id=channel_id, role="assistant")
 
     async def _regenerate_reply(
@@ -1383,7 +1310,6 @@ class DiscordBot:
         channel_id: int,
         channel: discord.abc.Messageable,
     ) -> None:
-        """Re-generate a bot reply from the current history state."""
         transcript = await self._build_context_for_api(
             channel_id=channel_id,
             pending_messages=[],
@@ -1422,21 +1348,17 @@ class DiscordBot:
         entries = self.history_store.load_all_entries(channel_id=channel_id)
         if not entries:
             return
-        # Check the last entry is from the bot (i.e. there's a reply to regenerate)
         if entries[-1].get("role") != "assistant":
             return
-        # Find the last user entry and verify it matches the edited message
         old_text = (before.content or "").strip()
         for e in reversed(entries):
             if e["role"] == "user":
-                # If before content is available, verify it matches
                 if old_text and e["content"] != old_text:
                     return
                 break
         else:
-            return  # no user entry found
+            return
 
-        # Delete bot's Discord messages after the edited user message
         to_delete: list[discord.Message] = []
         bot_id = self.client.user.id  # type: ignore[union-attr]
         async for msg in after.channel.history(after=after, limit=50):
@@ -1446,7 +1368,6 @@ class DiscordBot:
                 break
         await self._delete_messages(to_delete)
 
-        # Update user's last message, delete bot reply from DB, regenerate
         self.history_store.replace_last_by_role(
             channel_id=channel_id, role="user", new_content=new_text,
         )
@@ -1480,13 +1401,10 @@ class DiscordBot:
         self._watch_previous_status[after.id] = new_status
         name = after.display_name
         self.logger.info(f"👁️ presence {name}({uid_str}): {old_status} -> {new_status}")
-        # Skip initial cache fill from Discord
         if prev is None:
             return
-        # offline/invisible -> online/idle/dnd: start 10-min idle check
         if old_status == "offline" and new_status != "offline":
             self._start_watch_timer(after.id, after.guild)
-        # online -> offline: cancel any pending timer
         elif new_status == "offline":
             self._cancel_watch_timer(after.id)
 
@@ -1503,10 +1421,8 @@ class DiscordBot:
             task.cancel()
 
     async def _watch_idle_fire(self, user_id: int, guild: discord.Guild) -> None:
-        """After configured idle period, proactively reach out to watched user."""
         await asyncio.sleep(self.watch_online_idle_seconds)
         self._watch_online_timers.pop(user_id, None)
-        # Find the most recent channel where this user talked to the bot
         channel = self._find_channel_for_user(user_id, guild)
         if channel is None:
             self.logger.info(f"👁️ watch_idle_fire user={user_id} no_channel")
@@ -1554,7 +1470,6 @@ class DiscordBot:
         self._schedule_proactive(channel_id, channel)
 
     def _load_last_message_ts(self) -> None:
-        """Load persisted last-message timestamps from disk."""
         try:
             if self._last_msg_ts_path.exists():
                 raw = _json.loads(self._last_msg_ts_path.read_text(encoding="utf-8"))
@@ -1565,13 +1480,11 @@ class DiscordBot:
             pass  # corrupted file — start fresh
 
     def _save_last_message_ts(self) -> None:
-        """Persist last-message timestamps to disk."""
         self._last_msg_ts_path.parent.mkdir(parents=True, exist_ok=True)
         data = {f"{ch_id}:{uid}": ts for (ch_id, uid), ts in self._last_message_ts.items()}
         self._last_msg_ts_path.write_text(_json.dumps(data), encoding="utf-8")
 
     def _find_channel_for_user(self, user_id: int, guild: discord.Guild) -> discord.abc.Messageable | None:
-        """Find the most recently active channel for a user based on message timestamps."""
         best_ch: int | None = None
         best_ts: float = 0.0
         for (ch_id, uid), ts in self._last_message_ts.items():
@@ -1601,10 +1514,7 @@ class DiscordBot:
         if is_new:
             self._maybe_schedule_typing_nudge(channel.id, channel)
 
-        # Jealousy is now message-based only (handled in on_message)
-
     def _check_jealousy(self, channel: discord.abc.Messageable, user: discord.User) -> None:
-        """If the user sends a message in a jealousy-monitored channel, accumulate count and schedule fire."""
         if not self.settings.jealousy_channel_ids:
             return
         uid_str = str(user.id)
@@ -1620,18 +1530,15 @@ class DiscordBot:
             return
         if bot_channel.id == channel.id:
             return
-        # Increment message count
         self._jealousy_counts[user.id] = self._jealousy_counts.get(user.id, 0) + 1
         count = self._jealousy_counts[user.id]
         self.logger.info(f"💚 jealousy_tick user={uid_str} msg_count={count}")
-        # Schedule fire if not already pending
         if user.id not in self._jealousy_timers:
             self._jealousy_timers[user.id] = asyncio.create_task(
                 self._jealousy_delayed_fire(user.id, bot_channel)
             )
 
     async def _jealousy_delayed_fire(self, user_id: int, channel: discord.abc.Messageable) -> None:
-        """Wait briefly, then send accumulated message count to the LLM."""
         await asyncio.sleep(30)
         self._jealousy_timers.pop(user_id, None)
         count = self._jealousy_counts.pop(user_id, 0)
@@ -1705,12 +1612,11 @@ class DiscordBot:
 
         emoji_str = str(payload.emoji)
 
-        # Reroll: user reacts with 🔄 on a bot message
         if emoji_str == "\U0001f504" and message.author.id == self.client.user.id:  # type: ignore[union-attr]
             channel_id = payload.channel_id
             batch = await self._collect_bot_reply_batch(channel, message)  # type: ignore[arg-type]
             if batch is None:
-                return  # not the last reply, ignore
+                return
             await self._delete_messages(batch)
             self._delete_bot_reply_db(channel_id)
             await self._regenerate_reply(channel_id, channel)  # type: ignore[arg-type]
@@ -1723,18 +1629,15 @@ class DiscordBot:
             reaction_text = f"[反应: {emoji_str}]"
 
         channel_id = payload.channel_id
-        # Buffer reaction and schedule a nudge (replaces timer if nudge is sooner)
         self._pending_reactions.setdefault(channel_id, []).append(reaction_text)
         self._maybe_schedule_typing_nudge(channel_id, channel)
 
     async def _describe_attachments(self, message: discord.Message) -> list[str]:
-        """Download image attachments and describe them via the vision model."""
         vision = self.reply_service.vision_client
         if not vision.available:
             return []
 
         IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
-        # Check if any image attachments exist before sending status
         has_images = any(
             (att.content_type or "").split(";")[0].strip().lower() in IMAGE_TYPES
             for att in message.attachments
@@ -1778,12 +1681,10 @@ class DiscordBot:
             return
 
         text = (message.content or "").strip()
-        # Handle sticker-only messages
         if not text and message.stickers:
             names = "、".join(s.name for s in message.stickers)
             text = f"[贴纸: {names}]"
 
-        # Handle image attachments via vision model
         image_descs = await self._describe_attachments(message)
         if image_descs:
             text = (text + "\n" if text else "") + "\n".join(image_descs)
@@ -1791,7 +1692,6 @@ class DiscordBot:
         if not text:
             return
 
-        # Prepend quoted message content when user replies to a message
         ref = message.reference
         if ref and ref.message_id:
             try:
@@ -1807,14 +1707,10 @@ class DiscordBot:
 
         self._stop_typing_session(message.channel.id, message.author.id, reason="message")
         self._typing_nudge_channels.discard(message.channel.id)
-        # Jealousy: also check on message (threads don't fire on_typing)
         self._check_jealousy(message.channel, message.author)
-        # If this message is from a jealousy-monitored channel, skip normal reply
         if self.settings.jealousy_channel_ids and str(message.channel.id) in self.settings.jealousy_channel_ids:
             return
-        # Cancel watch-online timer — user spoke
         self._cancel_watch_timer(message.author.id)
-        # Cancel variable/proactive timer — user is active
         old_vt = self._variable_timers.pop(message.channel.id, None)
         if old_vt is not None:
             task, _ = old_vt
