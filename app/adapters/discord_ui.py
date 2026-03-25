@@ -172,6 +172,63 @@ class SearchConfigModal(discord.ui.Modal, title="搜索 API 配置"):
         )
 
 
+class CompressionConfigModal(discord.ui.Modal, title="压缩 API 配置"):
+    def __init__(self, bot: DiscordBot):
+        super().__init__()
+        self.bot = bot
+        env_values = read_env_values()
+        current = bot.settings
+        self.compression_base_url = discord.ui.TextInput(
+            label="COMPRESSION_BASE_URL",
+            default=env_values.get("COMPRESSION_BASE_URL", current.compression_base_url),
+            required=False,
+            max_length=400,
+            placeholder="留空则使用聊天 API 的 BASE_URL",
+        )
+        self.compression_api_key = discord.ui.TextInput(
+            label="COMPRESSION_API_KEY",
+            default=env_values.get("COMPRESSION_API_KEY", current.compression_api_key),
+            required=False,
+            max_length=400,
+            placeholder="留空则使用聊天 API 的 API_KEY",
+        )
+        self.compression_model = discord.ui.TextInput(
+            label="COMPRESSION_MODEL",
+            default=env_values.get("COMPRESSION_MODEL", current.compression_model),
+            required=False,
+            max_length=120,
+            placeholder="留空则使用聊天 API 的 MODEL",
+        )
+        self.compression_prompt = discord.ui.TextInput(
+            label="压缩提示词",
+            style=discord.TextStyle.paragraph,
+            default=bot.prompt_service.read_prompt("compression")[:4000],
+            required=True,
+            max_length=4000,
+        )
+        self.add_item(self.compression_base_url)
+        self.add_item(self.compression_api_key)
+        self.add_item(self.compression_model)
+        self.add_item(self.compression_prompt)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        update_env_values(
+            {
+                "COMPRESSION_BASE_URL": self.compression_base_url.value.strip(),
+                "COMPRESSION_API_KEY": self.compression_api_key.value.strip(),
+                "COMPRESSION_MODEL": self.compression_model.value.strip(),
+            }
+        )
+        self.bot.prompt_service.write_prompt(
+            target="compression",
+            content=self.compression_prompt.value,
+        )
+        await interaction.response.edit_message(
+            content="API 配置\n\n压缩 API 配置和提示词已保存，文件监听会自动生效。",
+            view=ApiToolboxView(self.bot),
+        )
+
+
 KINK_SEPARATOR = "\n---KINK---\n"
 
 
@@ -457,6 +514,10 @@ class ApiToolboxView(discord.ui.View):
     async def search_api(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(SearchConfigModal(self.bot))
 
+    @discord.ui.button(label="压缩 API", style=discord.ButtonStyle.primary)
+    async def compression_api(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(CompressionConfigModal(self.bot))
+
     @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(
@@ -480,11 +541,7 @@ class PromptToolboxView(discord.ui.View):
             PromptEditModal(self.bot, target="userinfo", title="编辑用户信息")
         )
 
-    @discord.ui.button(label="编辑压缩提示词", style=discord.ButtonStyle.secondary)
-    async def edit_compression(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(
-            PromptEditModal(self.bot, target="compression", title="编辑压缩提示词")
-        )
+
 
     @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

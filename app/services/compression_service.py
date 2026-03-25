@@ -36,9 +36,9 @@ class CompressionService:
 
     def apply_settings(self, settings: Settings) -> None:
         self.client = LLMClient(
-            base_url=settings.base_url,
-            api_key=settings.api_key,
-            model=settings.model,
+            base_url=settings.compression_base_url or settings.base_url,
+            api_key=settings.compression_api_key or settings.api_key,
+            model=settings.compression_model or settings.model,
             show_api_payload=settings.show_api_payload,
         )
 

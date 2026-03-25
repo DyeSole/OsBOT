@@ -44,6 +44,9 @@ class Settings:
     vision_api_key: str = ""
     vision_model: str = ""
     vision_prompt: str = ""
+    compression_base_url: str = ""
+    compression_api_key: str = ""
+    compression_model: str = ""
 
     def __post_init__(self) -> None:
         if self.watch_user_ids is None:
@@ -130,6 +133,10 @@ def load_settings() -> Settings:
     vision_model = _env_value("VISION_MODEL", env_file, "").strip()
     vision_prompt = _env_value("VISION_PROMPT", env_file, "").strip()
 
+    compression_base_url = _env_value("COMPRESSION_BASE_URL", env_file, "").strip()
+    compression_api_key = _env_value("COMPRESSION_API_KEY", env_file, "").strip()
+    compression_model = _env_value("COMPRESSION_MODEL", env_file, "").strip()
+
     return Settings(
         bot_key=bot_key,
         discord_bot_token=_env_value("DISCORD_BOT_TOKEN", env_file, "").strip(),
@@ -163,6 +170,9 @@ def load_settings() -> Settings:
         vision_api_key=vision_api_key,
         vision_model=vision_model,
         vision_prompt=vision_prompt,
+        compression_base_url=compression_base_url,
+        compression_api_key=compression_api_key,
+        compression_model=compression_model,
     )
 
 
@@ -206,6 +216,9 @@ def summarize_settings(settings: Settings) -> dict[str, Any]:
         "VISION_BASE_URL": settings.vision_base_url,
         "VISION_MODEL": settings.vision_model,
         "VISION_API_KEY_SET": bool(settings.vision_api_key),
+        "COMPRESSION_BASE_URL": settings.compression_base_url,
+        "COMPRESSION_MODEL": settings.compression_model,
+        "COMPRESSION_API_KEY_SET": bool(settings.compression_api_key),
     }
 
 
