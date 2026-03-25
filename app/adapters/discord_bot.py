@@ -209,6 +209,32 @@ class DiscordBot:
                     ephemeral=True,
                 )
 
+        @self.tree.command(name="导入Cookie", description="从JSON文件导入浏览器Cookie")
+        @discord.app_commands.describe(
+            profile="登录态名称（如 bilibili、xiaohongshu）",
+            file="Cookie JSON 文件",
+        )
+        async def browser_import_cookie(
+            interaction: discord.Interaction,
+            profile: str,
+            file: discord.Attachment,
+        ) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                import json as _json
+                from app.infra.browser_client import import_cookies
+
+                raw = await file.read()
+                data = _json.loads(raw.decode("utf-8"))
+                msg = import_cookies(profile, data)
+                await interaction.followup.send(msg, ephemeral=True)
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("BROWSER", "cookie import failed", exc=exc)
+                await interaction.followup.send(
+                    f"导入Cookie失败: {exc}",
+                    ephemeral=True,
+                )
+
         @self.tree.command(name="登录态列表", description="查看已保存的浏览器登录态")
         async def browser_profiles(interaction: discord.Interaction) -> None:
             from app.infra.browser_client import list_profiles
