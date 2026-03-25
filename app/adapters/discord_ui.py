@@ -399,8 +399,7 @@ class WatchOnlineTimeModal(discord.ui.Modal, title="上线监听"):
         self.prompt = discord.ui.TextInput(
             label="上线提示词（{minutes}=分钟数）",
             style=discord.TextStyle.paragraph,
-            default=bot.prompt_service.read_prompt("watch_online").strip()
-                or "[系统提示] 你关注的用户已经上线{minutes}分钟了但没有说话，跟他主动说句话。",
+            default=bot.prompt_service.read_prompt("watch_online").strip(),
             required=False,
             max_length=500,
         )

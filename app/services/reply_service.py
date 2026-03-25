@@ -111,10 +111,10 @@ def load_system_prompt() -> str:
 
 
 class ReplyService:
-    def __init__(self, settings: Settings):
-        self.apply_settings(settings)
+    def __init__(self, settings: Settings, *, describe_prompt: str = ""):
+        self.apply_settings(settings, describe_prompt=describe_prompt)
 
-    def apply_settings(self, settings: Settings) -> None:
+    def apply_settings(self, settings: Settings, *, describe_prompt: str = "") -> None:
         self.client = LLMClient(
             base_url=settings.base_url,
             api_key=settings.api_key,
@@ -125,12 +125,14 @@ class ReplyService:
             base_url=settings.base_url,
             api_key=settings.api_key,
             model=settings.model,
+            describe_prompt=describe_prompt,
         )
         if settings.vision_base_url or settings.vision_model:
             self.vision_client = VisionClient(
                 base_url=settings.vision_base_url or settings.base_url,
                 api_key=settings.vision_api_key or settings.api_key,
                 model=settings.vision_model or settings.model,
+                describe_prompt=describe_prompt,
                 fallback=main_vision,
             )
         else:

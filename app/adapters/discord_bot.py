@@ -50,7 +50,11 @@ class DiscordBot:
             mode=settings.app_mode,
             show_error_detail=settings.show_error_detail,
         )
-        self.reply_service = ReplyService(settings)
+        self.prompt_service = PromptService()
+        self.reply_service = ReplyService(
+            settings,
+            describe_prompt=self.prompt_service.read_prompt("vision_describe").strip(),
+        )
         self.history_store = ChatHistoryStore(
             data_dir=BASE_DIR / "data" / "chat_history",
         )
@@ -62,7 +66,6 @@ class DiscordBot:
             history_store=self.history_store,
             compression_store=self.compression_store,
         )
-        self.prompt_service = PromptService()
         self.context_builder = ContextBuilder(self.history_store, self.compression_store)
         self.proactive_idle_seconds = settings.proactive_idle_seconds
         self.typing_nudge_seconds = settings.typing_nudge_seconds
@@ -230,7 +233,10 @@ class DiscordBot:
     def apply_settings(self, settings: Settings) -> None:
         old_token = self.settings.discord_bot_token
         self.settings = settings
-        self.reply_service.apply_settings(settings)
+        self.reply_service.apply_settings(
+            settings,
+            describe_prompt=self.prompt_service.read_prompt("vision_describe").strip(),
+        )
         self.compression_service.apply_settings(settings)
         self.logger.bot_key = settings.bot_key
         self.logger.mode = settings.app_mode
@@ -1014,7 +1020,7 @@ class DiscordBot:
         is_typing_nudge = channel_id in self._typing_nudge_channels
         self._typing_nudge_channels.discard(channel_id)
         if is_typing_nudge:
-            timer_note = "[系统提示] ta刚才在打字，但最终没有发出消息。"
+            timer_note = self.prompt_service.read_prompt("typing_nudge").strip()
         elif seconds != self.proactive_idle_seconds:
             timer_note = f"[system: your set_timer for {seconds}s has expired]\n{self.prompt_service.read_prompt('proactive')}"
         else:
@@ -1439,7 +1445,7 @@ class DiscordBot:
         minutes = int(self.watch_online_idle_seconds // 60) or 1
         raw_prompt = self.prompt_service.read_prompt("watch_online")
         if not raw_prompt.strip():
-            raw_prompt = "[系统提示] 你关注的用户已经上线{minutes}分钟了但没有说话，跟他主动说句话。"
+            raw_prompt = "[系统提示] 你关注的用户已经上线{minutes}分钟了。"
         timer_note = raw_prompt.strip().replace("{minutes}", str(minutes))
         if transcript:
             transcript = f"{transcript}\n{timer_note}"

@@ -471,12 +471,13 @@ class LLMClient:
 class VisionClient:
 
     ANTHROPIC_VERSION = "2023-06-01"
-    DESCRIBE_PROMPT = "请用中文详细描述这张图片的内容。注重细节，如实描述画面中的所有元素，不要做气氛渲染，不要回避露骨或敏感的词汇。"
+    DEFAULT_DESCRIBE_PROMPT = "请用中文详细描述这张图片的内容。注重细节，如实描述画面中的所有元素，不要做气氛渲染，不要回避露骨或敏感的词汇。"
 
-    def __init__(self, base_url: str, api_key: str, model: str, *, fallback: "VisionClient | None" = None):
+    def __init__(self, base_url: str, api_key: str, model: str, *, describe_prompt: str = "", fallback: "VisionClient | None" = None):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.describe_prompt = describe_prompt or self.DEFAULT_DESCRIBE_PROMPT
         self.fallback = fallback
 
     @property
@@ -508,7 +509,7 @@ class VisionClient:
             return None
 
         b64 = base64.b64encode(image_bytes).decode("ascii")
-        user_text = f"{context}\n\n{self.DESCRIBE_PROMPT}".strip() if context else self.DESCRIBE_PROMPT
+        user_text = f"{context}\n\n{self.describe_prompt}".strip() if context else self.describe_prompt
 
         try:
             if self._is_anthropic():

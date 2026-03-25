@@ -13,6 +13,8 @@ PROMPT_TARGETS = {
     "morning": PROMPTS_DIR / "morning.txt",
     "watch_online": PROMPTS_DIR / "watch_online.txt",
     "jealousy": PROMPTS_DIR / "jealousy.txt",
+    "typing_nudge": PROMPTS_DIR / "typing_nudge.txt",
+    "vision_describe": PROMPTS_DIR / "vision_describe.txt",
 }
 
 
