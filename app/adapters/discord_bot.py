@@ -345,6 +345,11 @@ class DiscordBot:
         buffer = ""
         is_first = True
         sent_msgs: list[discord.Message] = []
+        is_novel = self.settings.split_mode == "novel"
+        # Novel mode: stream into a single message via edits
+        novel_msg: discord.Message | None = None
+        novel_full = ""  # accumulated full text for novel mode
+        novel_last_edit = 0.0  # throttle edits
 
         while True:
             try:
@@ -355,7 +360,39 @@ class DiscordBot:
 
             if kind == "text":
                 buffer += value
-                if self.settings.split_mode == "chat":
+                if is_novel:
+                    novel_full += value
+                    now = asyncio.get_event_loop().time()
+                    # Throttle edits to avoid rate limits (~every 1s)
+                    if now - novel_last_edit >= 1.0:
+                        display = novel_full.strip()
+                        if display:
+                            try:
+                                if novel_msg is None:
+                                    if anchor_message is not None:
+                                        novel_msg = await anchor_message.reply(
+                                            display, mention_author=False,
+                                            allowed_mentions=AllowedMentions.none(),
+                                        )
+                                    else:
+                                        novel_msg = await channel.send(
+                                            display, allowed_mentions=AllowedMentions.none(),
+                                        )
+                                    sent_msgs.append(novel_msg)
+                                elif len(display) <= 2000:
+                                    await novel_msg.edit(content=display)
+                                else:
+                                    # Overflow: finalize current msg, start a new one
+                                    novel_full = value
+                                    novel_msg = await channel.send(
+                                        value.strip() or "...",
+                                        allowed_mentions=AllowedMentions.none(),
+                                    )
+                                    sent_msgs.append(novel_msg)
+                            except Exception:  # noqa: BLE001
+                                pass
+                            novel_last_edit = now
+                else:
                     parts = self._split_sentences(buffer)
                     if len(parts) > 1:
                         delay = self.settings.chat_reply_delay_seconds
@@ -376,20 +413,41 @@ class DiscordBot:
                             is_first = False
                         buffer = parts[-1]
             elif kind == "done":
-                if buffer.strip():
-                    if not is_first and self.settings.chat_reply_delay_seconds > 0:
-                        async with channel.typing():
-                            await asyncio.sleep(self.settings.chat_reply_delay_seconds)
-                    if is_first and anchor_message is not None:
-                        msg = await anchor_message.reply(
-                            buffer.strip(), mention_author=False,
-                            allowed_mentions=AllowedMentions.none(),
-                        )
-                    else:
-                        msg = await channel.send(
-                            buffer.strip(), allowed_mentions=AllowedMentions.none(),
-                        )
-                    sent_msgs.append(msg)
+                if is_novel:
+                    # Final edit with complete text
+                    display = novel_full.strip()
+                    if display:
+                        try:
+                            if novel_msg is None:
+                                if anchor_message is not None:
+                                    novel_msg = await anchor_message.reply(
+                                        display, mention_author=False,
+                                        allowed_mentions=AllowedMentions.none(),
+                                    )
+                                else:
+                                    novel_msg = await channel.send(
+                                        display, allowed_mentions=AllowedMentions.none(),
+                                    )
+                                sent_msgs.append(novel_msg)
+                            elif len(display) <= 2000:
+                                await novel_msg.edit(content=display)
+                        except Exception:  # noqa: BLE001
+                            pass
+                else:
+                    if buffer.strip():
+                        if not is_first and self.settings.chat_reply_delay_seconds > 0:
+                            async with channel.typing():
+                                await asyncio.sleep(self.settings.chat_reply_delay_seconds)
+                        if is_first and anchor_message is not None:
+                            msg = await anchor_message.reply(
+                                buffer.strip(), mention_author=False,
+                                allowed_mentions=AllowedMentions.none(),
+                            )
+                        else:
+                            msg = await channel.send(
+                                buffer.strip(), allowed_mentions=AllowedMentions.none(),
+                            )
+                        sent_msgs.append(msg)
                 return value, sent_msgs  # type: ignore[return-value]
             elif kind == "error":
                 raise value  # type: ignore[misc]
