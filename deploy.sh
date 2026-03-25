@@ -24,13 +24,13 @@ error() { echo -e "${RED}[✗]${NC} $*"; exit 1; }
 info "安装系统依赖..."
 if command -v apt-get &>/dev/null; then
     sudo apt-get update -qq
-    sudo apt-get install -y -qq python3 python3-venv python3-pip git
+    sudo apt-get install -y -qq python3 python3-venv python3-pip git xvfb
 elif command -v dnf &>/dev/null; then
-    sudo dnf install -y python3 python3-pip git
+    sudo dnf install -y python3 python3-pip git xorg-x11-server-Xvfb
 elif command -v yum &>/dev/null; then
-    sudo yum install -y python3 python3-pip git
+    sudo yum install -y python3 python3-pip git xorg-x11-server-Xvfb
 else
-    warn "未识别的包管理器，请确保已安装 python3、pip、git"
+    warn "未识别的包管理器，请确保已安装 python3、pip、git、xvfb"
 fi
 
 # ── 2. 检查 Python 版本 ──
@@ -146,6 +146,18 @@ fi
 
 # ── 9. 设置 systemd 服务 ──
 info "配置 systemd 服务..."
+
+# 创建启动脚本（负责拉起 Xvfb 虚拟显示器）
+sudo tee /usr/local/bin/osbot-start.sh > /dev/null << 'STARTEOF'
+#!/usr/bin/env bash
+pkill -f "Xvfb :99" 2>/dev/null || true
+Xvfb :99 -screen 0 1280x800x24 -ac &
+sleep 1
+export DISPLAY=:99
+exec "$@"
+STARTEOF
+sudo chmod +x /usr/local/bin/osbot-start.sh
+
 sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null << SVCEOF
 [Unit]
 Description=OsBOT Discord Bot
@@ -156,7 +168,7 @@ Wants=network-online.target
 Type=simple
 User=$USER
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$VENV_DIR/bin/python bot.py
+ExecStart=/usr/local/bin/osbot-start.sh $VENV_DIR/bin/python bot.py
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
