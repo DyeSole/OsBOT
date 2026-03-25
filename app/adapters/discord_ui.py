@@ -295,7 +295,7 @@ class ProactiveModal(discord.ui.Modal, title="聊天主动设置"):
         )
 
 
-class WatchOnlineTimeModal(discord.ui.Modal, title="上线等待时间"):
+class WatchOnlineTimeModal(discord.ui.Modal, title="上线监听"):
     def __init__(self, bot: DiscordBot):
         super().__init__()
         self.bot = bot
@@ -311,46 +311,36 @@ class WatchOnlineTimeModal(discord.ui.Modal, title="上线等待时间"):
             max_length=10,
         )
         self.add_item(self.idle_seconds)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        update_env_values(
-            {"WATCH_ONLINE_IDLE_SECONDS": self.idle_seconds.value.strip()}
-        )
-        await self.bot.reload_settings_if_needed()
-        await interaction.response.edit_message(
-            content=f"主动消息\n\n上线等待时间已设为 {self.idle_seconds.value.strip()} 秒。",
-            view=ProactiveToolboxView(self.bot),
-        )
-
-
-class WatchUsersModal(discord.ui.Modal, title="监听用户上线"):
-    def __init__(self, bot: DiscordBot):
-        super().__init__()
-        self.bot = bot
-        ids = bot.settings.watch_user_ids
-        # Pad to 6 slots
-        padded = (ids + [""] * 6)[:6]
-        self.slots: list[discord.ui.TextInput] = []
-        for i in range(5):
+        ids = current.watch_user_ids
+        padded = (ids + [""] * 4)[:4]
+        self.user_slots: list[discord.ui.TextInput] = []
+        for i in range(4):
             inp = discord.ui.TextInput(
-                label=f"用户 ID {i + 1}",
+                label=f"监听用户 ID {i + 1}",
                 default=padded[i],
                 required=False,
                 max_length=25,
                 placeholder="Discord User ID",
             )
-            self.slots.append(inp)
+            self.user_slots.append(inp)
             self.add_item(inp)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        ids = [s.value.strip() for s in self.slots if s.value.strip()]
-        update_env_values({"WATCH_USER_IDS": ",".join(ids)})
+        ids = [s.value.strip() for s in self.user_slots if s.value.strip()]
+        update_env_values({
+            "WATCH_ONLINE_IDLE_SECONDS": self.idle_seconds.value.strip(),
+            "WATCH_USER_IDS": ",".join(ids),
+        })
         await self.bot.reload_settings_if_needed()
         id_list = "\n".join(f"  {uid}" for uid in ids) if ids else "  （无）"
         await interaction.response.edit_message(
-            content=f"主动消息\n\n监听用户已更新：\n{id_list}",
+            content=(
+                f"主动消息\n\n上线等待时间：{self.idle_seconds.value.strip()} 秒\n"
+                f"监听用户：\n{id_list}"
+            ),
             view=ProactiveToolboxView(self.bot),
         )
+
 
 
 class JealousyChannelsModal(discord.ui.Modal, title="频道偷窥"):
@@ -489,11 +479,7 @@ class ProactiveToolboxView(discord.ui.View):
     async def watch_online_time(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(WatchOnlineTimeModal(self.bot))
 
-    @discord.ui.button(label="监听上线", style=discord.ButtonStyle.primary)
-    async def watch_users(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(WatchUsersModal(self.bot))
-
-    @discord.ui.button(label="频道偷窥", style=discord.ButtonStyle.primary)
+@discord.ui.button(label="频道偷窥", style=discord.ButtonStyle.primary)
     async def jealousy_channels(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(JealousyChannelsModal(self.bot))
 
