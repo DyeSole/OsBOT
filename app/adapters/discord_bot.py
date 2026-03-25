@@ -168,98 +168,64 @@ class DiscordBot:
                 ephemeral=True,
             )
 
-        @self.tree.command(name="截图", description="用浏览器截图指定URL")
-        @discord.app_commands.describe(
-            url="要截图的网址",
-            profile="登录态名称（如 bilibili、xiaohongshu），不填则匿名",
-            full_page="是否截全页，默认否",
-        )
-        async def browser_screenshot(
-            interaction: discord.Interaction,
-            url: str,
-            profile: str = "",
-            full_page: bool = False,
-        ) -> None:
-            await interaction.response.defer(ephemeral=True, thinking=True)
+    async def handle_browser_login(self, interaction: discord.Interaction, *, app: str) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            import io
+            from app.infra.browser_client import (
+                close_login_session,
+                finish_login_session,
+                start_login_session,
+            )
+
+            profile, url, source = await self._resolve_login_target(app)
+            session = await start_login_session(profile, url)
+            file = discord.File(
+                io.BytesIO(session["preview"]),
+                filename=f"{profile}-login-preview.png",
+            )
+            initial_text = "\n".join(
+                [
+                    "浏览器登录",
+                    "",
+                    f"应用: {app}",
+                    f"登录页: {url}",
+                    f"来源: {source}",
+                    "截图已返回，请在 120 秒内完成扫码/登录。",
+                    "我会每 5 秒检查一次，成功后立即保存登录态。",
+                ]
+            )
+            await interaction.edit_original_response(
+                content=initial_text,
+                attachments=[file],
+            )
             try:
-                from app.infra.browser_client import screenshot as _screenshot
-
-                data = await _screenshot(
-                    url,
-                    profile=profile or None,
-                    full_page=full_page,
+                msg = await finish_login_session(
+                    session,
+                    profile,
+                    login_url=url,
+                    timeout_ms=120_000,
+                    poll_interval_ms=5_000,
                 )
-                import io
-                file = discord.File(io.BytesIO(data), filename="screenshot.png")
-                await interaction.followup.send(file=file, ephemeral=True)
-            except Exception as exc:  # noqa: BLE001
-                self.logger.error("BROWSER", "screenshot failed", exc=exc)
-                await interaction.followup.send(
-                    f"截图失败: {exc}",
-                    ephemeral=True,
-                )
+            finally:
+                await close_login_session(session)
+            await interaction.edit_original_response(
+                content=f"{initial_text}\n\n结果: {msg}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("BROWSER", "login save failed", exc=exc)
+            await interaction.edit_original_response(
+                content=f"浏览器登录\n\n保存登录态失败: {exc}",
+            )
 
-        @self.tree.command(name="浏览器登录", description="输入应用名后打开登录页并保存登录态")
-        @discord.app_commands.describe(
-            app="应用名称（如 bilibili、xiaohongshu）",
-        )
-        async def browser_login(
-            interaction: discord.Interaction,
-            app: str,
-        ) -> None:
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            try:
-                from app.infra.browser_client import save_login
+    @staticmethod
+    def browser_profiles_text() -> str:
+        from app.infra.browser_client import list_profiles
 
-                profile, url, source = await self._resolve_login_target(app)
-                msg = await save_login(profile, url, timeout_ms=120_000)
-                await interaction.followup.send(
-                    f"应用: {app}\n登录页: {url}\n来源: {source}\n{msg}",
-                    ephemeral=True,
-                )
-            except Exception as exc:  # noqa: BLE001
-                self.logger.error("BROWSER", "login save failed", exc=exc)
-                await interaction.followup.send(
-                    f"保存登录态失败: {exc}",
-                    ephemeral=True,
-                )
-
-        @self.tree.command(name="导入cookie", description="从JSON文件导入浏览器Cookie")
-        @discord.app_commands.describe(
-            profile="登录态名称（如 bilibili、xiaohongshu）",
-            file="Cookie JSON 文件",
-        )
-        async def browser_import_cookie(
-            interaction: discord.Interaction,
-            profile: str,
-            file: discord.Attachment,
-        ) -> None:
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            try:
-                import json as _json
-                from app.infra.browser_client import import_cookies
-
-                raw = await file.read()
-                data = _json.loads(raw.decode("utf-8"))
-                msg = import_cookies(profile, data)
-                await interaction.followup.send(msg, ephemeral=True)
-            except Exception as exc:  # noqa: BLE001
-                self.logger.error("BROWSER", "cookie import failed", exc=exc)
-                await interaction.followup.send(
-                    f"导入Cookie失败: {exc}",
-                    ephemeral=True,
-                )
-
-        @self.tree.command(name="登录态列表", description="查看已保存的浏览器登录态")
-        async def browser_profiles(interaction: discord.Interaction) -> None:
-            from app.infra.browser_client import list_profiles
-
-            profiles = list_profiles()
-            if profiles:
-                text = "已保存的登录态:\n" + "\n".join(f"  • {p}" for p in profiles)
-            else:
-                text = "还没有保存任何登录态。"
-            await interaction.response.send_message(text, ephemeral=True)
+        profiles = list_profiles()
+        if profiles:
+            return "社交平台\n\n已保存的登录态:\n" + "\n".join(f"  • {p}" for p in profiles)
+        return "社交平台\n\n还没有保存任何登录态。"
 
     def apply_settings(self, settings: Settings) -> None:
         old_token = self.settings.discord_bot_token
@@ -332,6 +298,48 @@ class DiscordBot:
         self._env_mtime = current_mtime
         self.logger.info("env hot-reloaded from .env")
         return True
+
+    async def _build_context_for_api(
+        self,
+        *,
+        channel_id: int,
+        pending_messages: list[dict[str, str]],
+    ) -> str:
+        live_block = self.context_builder.build_live_block(channel_id=channel_id)
+        estimated_tokens = self.context_builder.estimate_tokens(live_block)
+        if self.settings.app_mode == "debug":
+            self.logger.info(
+                f"🧮 transcript_tokens ch={channel_id} est_tokens={estimated_tokens} "
+                f"limit={self.settings.transcript_max_tokens}"
+            )
+        self.reply_service.set_debug_context_meta(
+            estimated_tokens=estimated_tokens,
+            limit=self.settings.transcript_max_tokens,
+        )
+        transcript = self.context_builder.build_context_for_api(
+            channel_id=channel_id,
+            pending_messages=pending_messages,
+        )
+        if estimated_tokens <= self.settings.transcript_max_tokens:
+            return transcript
+
+        self.logger.info(
+            f"🗜️ transcript_over_limit ch={channel_id} est_tokens={estimated_tokens} "
+            f"limit={self.settings.transcript_max_tokens} -> compress"
+        )
+        try:
+            await asyncio.to_thread(
+                self.compression_service.compress_history,
+                channel_id=channel_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("UNKNOWN", "auto compression failed", exc=exc)
+            return transcript
+
+        return self.context_builder.build_context_for_api(
+            channel_id=channel_id,
+            pending_messages=pending_messages,
+        )
 
     async def _watch_env_changes(self) -> None:
         while True:
@@ -646,7 +654,7 @@ class DiscordBot:
             "time": pending.first_time,
             "content": merged_text,
         }
-        transcript = self.context_builder.build_context_for_api(
+        transcript = await self._build_context_for_api(
             channel_id=channel_id,
             pending_messages=[pending_entry],
         )
@@ -690,7 +698,15 @@ class DiscordBot:
             )
             # Handle tool calls from LLM
             edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
-            await self._handle_tool_calls(response, channel_id, pending.channel, prior_messages=messages, edit_msg=edit_msg, had_reply=bool(reply))
+            await self._handle_tool_calls(
+                response,
+                channel_id,
+                pending.channel,
+                prior_messages=messages,
+                edit_msg=edit_msg,
+                had_reply=bool(reply),
+                source_message=pending.anchor_message,
+            )
             # Start proactive idle timer after bot replies
             self._schedule_proactive(channel_id, pending.channel)
         except Exception as exc:  # noqa: BLE001
@@ -717,7 +733,7 @@ class DiscordBot:
             "time": now_clock,
             "content": text,
         }
-        transcript = self.context_builder.build_context_for_api(
+        transcript = await self._build_context_for_api(
             channel_id=channel_id,
             pending_messages=[pending_entry],
         )
@@ -753,7 +769,15 @@ class DiscordBot:
                     content=reply,
                 )
             edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
-            await self._handle_tool_calls(response, channel_id, message.channel, prior_messages=messages, edit_msg=edit_msg, had_reply=bool(reply))
+            await self._handle_tool_calls(
+                response,
+                channel_id,
+                message.channel,
+                prior_messages=messages,
+                edit_msg=edit_msg,
+                had_reply=bool(reply),
+                source_message=message,
+            )
             self._schedule_proactive(channel_id, message.channel)
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "failed to send reply", exc=exc)
@@ -796,6 +820,7 @@ class DiscordBot:
         search_depth: int = 0,
         edit_msg: discord.Message | None = None,
         had_reply: bool = True,
+        source_message: discord.Message | None = None,
     ) -> None:
         """Process tool calls returned by the LLM."""
         alarms_set = self._process_timer_calls(response.tool_calls, channel_id, channel)
@@ -820,6 +845,18 @@ class DiscordBot:
                 except Exception:  # noqa: BLE001
                     pass
         for tc in response.tool_calls:
+            if tc.name == "add_reaction":
+                emoji = str(tc.input.get("emoji", "")).strip()
+                if emoji and source_message is not None:
+                    try:
+                        reaction = (
+                            discord.PartialEmoji.from_str(emoji)
+                            if emoji.startswith("<") and emoji.endswith(">")
+                            else emoji
+                        )
+                        await source_message.add_reaction(reaction)
+                    except Exception as exc:  # noqa: BLE001
+                        self.logger.error("API", f"failed to add reaction: {emoji}", exc=exc)
             if tc.name == "web_search":
                 query = tc.input.get("query", "")
                 if query:
@@ -1347,7 +1384,7 @@ class DiscordBot:
         channel: discord.abc.Messageable,
     ) -> None:
         """Re-generate a bot reply from the current history state."""
-        transcript = self.context_builder.build_context_for_api(
+        transcript = await self._build_context_for_api(
             channel_id=channel_id,
             pending_messages=[],
         )

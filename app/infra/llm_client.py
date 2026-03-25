@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import json
 import logging
+from datetime import datetime
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 import requests
@@ -27,10 +29,15 @@ class LLMClient:
     ANTHROPIC_VERSION = "2023-06-01"
     DEFAULT_MAX_TOKENS = 1024
 
-    def __init__(self, base_url: str, api_key: str, model: str):
+    DEBUG_DIR = Path(__file__).resolve().parents[2] / "data" / "debug"
+    DEBUG_PAYLOAD_PATH = DEBUG_DIR / "llm_requests.log"
+
+    def __init__(self, base_url: str, api_key: str, model: str, *, show_api_payload: bool = False):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.show_api_payload = show_api_payload
+        self.debug_context_meta: dict[str, Any] = {}
 
     def _is_anthropic_messages_api(self) -> bool:
         return self.base_url.endswith("/messages")
@@ -38,10 +45,6 @@ class LLMClient:
     def _request_url(self) -> str:
         if self._is_anthropic_messages_api():
             return self.base_url
-
-        # Accept both styles:
-        # - https://host/v1
-        # - https://host/v1/chat/completions
         if self.base_url.endswith("/chat/completions"):
             return self.base_url
         return f"{self.base_url}/chat/completions"
@@ -55,6 +58,154 @@ class LLMClient:
         if self._is_anthropic_messages_api():
             headers["anthropic-version"] = self.ANTHROPIC_VERSION
         return headers
+
+    def _can_count_tokens(self) -> bool:
+        return "claude" in self.model.lower()
+
+    def _count_tokens_candidates(self) -> list[str]:
+        base = self.base_url.rstrip("/")
+        candidates: list[str] = []
+        if self._is_anthropic_messages_api():
+            candidates.append(f"{base}/count_tokens")
+        else:
+            if base.endswith("/chat/completions"):
+                prefix = base[: -len("/chat/completions")]
+                candidates.extend(
+                    [
+                        f"{prefix}/messages/count_tokens",
+                        f"{prefix}/count_tokens",
+                    ]
+                )
+            else:
+                candidates.extend(
+                    [
+                        f"{base}/messages/count_tokens",
+                        f"{base}/count_tokens",
+                    ]
+                )
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in candidates:
+            if item not in seen:
+                seen.add(item)
+                out.append(item)
+        return out
+
+    def _count_tokens(self, payload: dict[str, Any]) -> tuple[int | None, dict[str, Any]]:
+        if not self._can_count_tokens():
+            return None, {"source": "anthropic_count_tokens_skipped", "reason": "model_not_claude"}
+
+        count_payload: dict[str, Any] = {
+            "model": payload.get("model", self.model),
+            "messages": payload.get("messages", []),
+        }
+        if payload.get("system"):
+            count_payload["system"] = payload["system"]
+        if payload.get("tools"):
+            count_payload["tools"] = payload["tools"]
+
+        last_meta: dict[str, Any] = {
+            "source": "anthropic_count_tokens_unavailable",
+            "tried_urls": self._count_tokens_candidates(),
+        }
+        for url in self._count_tokens_candidates():
+            try:
+                resp = requests.post(
+                    url,
+                    headers=self._headers(),
+                    json=count_payload,
+                    timeout=30,
+                )
+                if resp.status_code >= 400:
+                    last_meta = {
+                        "source": "anthropic_count_tokens_unavailable",
+                        "url": url,
+                        "status_code": resp.status_code,
+                        "body_snippet": resp.text[:200].replace("\n", " "),
+                    }
+                    continue
+                data = resp.json()
+                tokens = data.get("input_tokens")
+                if isinstance(tokens, int) and tokens >= 0:
+                    return tokens, {
+                        "source": "anthropic_count_tokens",
+                        "url": url,
+                    }
+                last_meta = {
+                    "source": "anthropic_count_tokens_unavailable",
+                    "url": url,
+                    "reason": "missing_input_tokens",
+                    "body_snippet": json.dumps(data, ensure_ascii=False)[:200],
+                }
+            except Exception as exc:
+                last_meta = {
+                    "source": "anthropic_count_tokens_unavailable",
+                    "url": url,
+                    "reason": exc.__class__.__name__,
+                    "detail": str(exc)[:200],
+                }
+        return None, last_meta
+
+    def _dump_payload_debug(
+        self,
+        *,
+        payload: dict[str, Any],
+        tools: list[dict[str, Any]] | None,
+        stream: bool,
+    ) -> None:
+        if not self.show_api_payload:
+            return
+
+        self.DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        raw_messages = payload.get("messages", [])
+        system_prompt = ""
+        messages = raw_messages
+        if self._is_anthropic_messages_api():
+            system_prompt = str(payload.get("system", ""))
+        elif raw_messages and raw_messages[0].get("role") == "system":
+            system_prompt = str(raw_messages[0].get("content", ""))
+            messages = raw_messages[1:]
+
+        history_parts: list[str] = []
+        for item in messages:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", "")).strip() or "unknown"
+            content = item.get("content", "")
+            if isinstance(content, str):
+                text = content
+            else:
+                text = json.dumps(content, ensure_ascii=False, indent=2)
+            history_parts.append(f"[{role}]\n{text}")
+
+        tools_text = json.dumps(tools or [], ensure_ascii=False, indent=2) if tools else ""
+        total_estimated_tokens, total_meta = self._count_tokens(payload)
+
+        parts = [
+            "=======请求时间=======",
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "=======实时聊天记录预测Token=======",
+            json.dumps(self.debug_context_meta, ensure_ascii=False, indent=2) if self.debug_context_meta else "（无）",
+            "=======总预测Token=======",
+            json.dumps(
+                {"estimated_tokens": total_estimated_tokens, **total_meta},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            "=======系统提示词=======",
+            system_prompt or "（空）",
+            "=======历史记录=======",
+            "\n\n".join(history_parts) if history_parts else "（空）",
+            "=======工具=======",
+            tools_text or "（无）",
+            "=======其他=======",
+            f"模型: {self.model}\n流式: {'是' if stream else '否'}",
+            "",
+        ]
+        with self.DEBUG_PAYLOAD_PATH.open("w", encoding="utf-8") as f:
+            f.write("\n".join(parts))
+            f.write("\n")
+        self.debug_context_meta = {}
 
     def _payload(
         self,
@@ -79,7 +230,6 @@ class LLMClient:
             "messages": ([{"role": "system", "content": system_prompt}] if system_prompt else []) + messages,
         }
         if tools:
-            # OpenAI-compatible format
             payload["tools"] = [
                 {
                     "type": "function",
@@ -170,10 +320,13 @@ class LLMClient:
         if not self.api_key:
             raise ValueError("missing API_KEY")
 
+        payload = self._payload(messages, system_prompt, tools)
+        self._dump_payload_debug(payload=payload, tools=tools, stream=False)
+
         resp = requests.post(
             self._request_url(),
             headers=self._headers(),
-            json=self._payload(messages, system_prompt, tools),
+            json=payload,
             timeout=45,
         )
         if resp.status_code >= 400:
@@ -183,7 +336,6 @@ class LLMClient:
         return resp.json()
 
     def generate(self, messages: list[dict[str, str]], system_prompt: str) -> str:
-        """Backwards-compatible: returns text only."""
         data = self._do_request(messages, system_prompt)
         response = self._parse_response(data)
         return response.text
@@ -194,7 +346,6 @@ class LLMClient:
         system_prompt: str,
         tools: list[dict[str, Any]],
     ) -> LLMResponse:
-        """Returns structured response with text and tool calls."""
         data = self._do_request(messages, system_prompt, tools)
         return self._parse_response(data)
 
@@ -205,7 +356,6 @@ class LLMClient:
         tools: list[dict[str, Any]],
         on_text: Callable[[str], None],
     ) -> LLMResponse:
-        """Stream response, calling on_text for each text delta. Returns full LLMResponse."""
         if not self.base_url:
             raise ValueError("missing BASE_URL")
         if not self.api_key:
@@ -213,6 +363,7 @@ class LLMClient:
 
         payload = self._payload(messages, system_prompt, tools)
         payload["stream"] = True
+        self._dump_payload_debug(payload=payload, tools=tools, stream=True)
 
         resp = requests.post(
             self._request_url(),
@@ -277,7 +428,6 @@ class LLMClient:
         self, resp: requests.Response, on_text: Callable[[str], None],
     ) -> LLMResponse:
         text_parts: list[str] = []
-        # {index: {"name": str, "args": str}}
         tool_acc: dict[int, dict[str, str]] = {}
 
         for line in resp.iter_lines(decode_unicode=True):
@@ -318,9 +468,7 @@ class LLMClient:
 
         return LLMResponse(text="".join(text_parts).strip(), tool_calls=tool_calls)
 
-
 class VisionClient:
-    """Lightweight client that sends images to a vision model and returns text descriptions."""
 
     ANTHROPIC_VERSION = "2023-06-01"
     DESCRIBE_PROMPT = "请用中文详细描述这张图片的内容。注重细节，如实描述画面中的所有元素，不要做气氛渲染，不要回避露骨或敏感的词汇。"
@@ -356,10 +504,6 @@ class VisionClient:
         return headers
 
     def describe_image(self, image_bytes: bytes, media_type: str, *, system_prompt: str = "", context: str = "") -> str | None:
-        """Send an image to the vision model and return a text description.
-
-        Returns None on any failure so callers can gracefully skip.
-        """
         if not self.available:
             return None
 

@@ -1,14 +1,26 @@
-"""Playwright browser client for browsing authenticated sites."""
-
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
-from urllib.parse import urlparse
+from typing import Any
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "browser"
 AUTH_DIR = DATA_DIR / "auth"
+
+QR_SELECTORS: dict[str, list[str]] = {
+    "bilibili": [
+        ".login-scan-box img",
+        ".qrcode-box img",
+        ".qr-code__image",
+        "canvas",
+    ],
+    "xiaohongshu": [
+        '[class*="qrcode"] img',
+        '[class*="qr"] img',
+        '[class*="login"] canvas',
+        '[class*="qrcode"] canvas',
+    ],
+}
 
 
 def _ensure_dirs() -> None:
@@ -17,149 +29,123 @@ def _ensure_dirs() -> None:
 
 
 def list_profiles() -> list[str]:
-    """Return saved auth profile names (without .json suffix)."""
     _ensure_dirs()
     return sorted(p.stem for p in AUTH_DIR.glob("*.json"))
 
 
-def import_cookies(profile: str, cookies: list[dict], *, url: str = "") -> str:
-    """Import cookies exported from a browser into a Playwright storage state file.
-
-    *cookies* can be in either format:
-    - Netscape/EditThisCookie style: [{name, value, domain, path, ...}, ...]
-    - Playwright storage state:      {cookies: [...], origins: [...]}
-
-    If a full Playwright storage state dict is passed, it is saved as-is.
-    A *url* hint is only needed when cookie entries lack a ``domain`` field.
-    """
-    _ensure_dirs()
-    auth_path = AUTH_DIR / f"{profile}.json"
-
-    # Detect Playwright storage state format (dict with "cookies" key)
-    if isinstance(cookies, dict) and "cookies" in cookies:
-        auth_path.write_text(json.dumps(cookies, ensure_ascii=False, indent=2), encoding="utf-8")
-        return f"已导入 {profile} 登录态（Playwright 格式） -> {auth_path}"
-
-    # Convert simple cookie list to Playwright storage state
-    domain_hint = urlparse(url).hostname or "" if url else ""
-    pw_cookies = []
-    for c in cookies:
-        domain = c.get("domain", domain_hint)
-        secure = c.get("secure", False)
-        pw_cookies.append({
-            "name": c["name"],
-            "value": c["value"],
-            "domain": domain,
-            "path": c.get("path", "/"),
-            "expires": c.get("expirationDate", c.get("expires", -1)),
-            "httpOnly": c.get("httpOnly", False),
-            "secure": secure,
-            "sameSite": c.get("sameSite", "Lax"),
-        })
-
-    state = {"cookies": pw_cookies, "origins": []}
-    auth_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    return f"已导入 {profile} 登录态（{len(pw_cookies)} 条 cookie） -> {auth_path}"
+def _looks_logged_in_url(current_url: str, login_url: str) -> bool:
+    current = current_url.lower()
+    login = login_url.lower()
+    return current != login and "login" not in current
 
 
-def import_cookies_from_file(profile: str, file_path: str) -> str:
-    """Import cookies from a JSON file on disk.
+async def _is_logged_in(page) -> bool:
+    login_selectors = [
+        'button:has-text("登录")',
+        'button:has-text("Log in")',
+        'a:has-text("登录")',
+        'a:has-text("Sign in")',
+        'input[placeholder*="手机号"]',
+        'input[placeholder*="验证码"]',
+        'input[type="password"]',
+    ]
+    for selector in login_selectors:
+        try:
+            locator = page.locator(selector)
+            if await locator.first().is_visible():
+                return False
+        except Exception:
+            continue
+    return True
 
-    Accepts EditThisCookie export (list), Playwright storage state (dict),
-    or Netscape cookie export (list).
-    """
-    path = Path(file_path)
-    if not path.exists():
-        raise FileNotFoundError(f"文件不存在: {file_path}")
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return import_cookies(profile, data)
+
+async def _capture_login_preview(page, profile: str) -> bytes:
+    selectors = QR_SELECTORS.get(profile, [])
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            if await locator.is_visible():
+                return await locator.screenshot()
+        except Exception:
+            continue
+    return await page.screenshot(full_page=True)
 
 
-async def save_login(profile: str, url: str, *, timeout_ms: int = 120_000) -> str:
-    """Open a headed browser for manual login, then save storage state.
-
-    Returns a status message.  Must be run where a display is available
-    (VNC / X11 forwarding) because the browser is *not* headless.
-    """
+async def start_login_session(profile: str, url: str) -> dict[str, Any]:
     from playwright.async_api import async_playwright
 
     _ensure_dirs()
+    playwright = await async_playwright().start()
+    browser = await playwright.chromium.launch(headless=False)
+    context = await browser.new_context()
+    page = await context.new_page()
+    await page.goto(url)
+    await page.wait_for_load_state("domcontentloaded")
+    await asyncio.sleep(2)
+    preview = await _capture_login_preview(page, profile)
     auth_path = AUTH_DIR / f"{profile}.json"
+    return {
+        "playwright": playwright,
+        "browser": browser,
+        "context": context,
+        "page": page,
+        "auth_path": auth_path,
+        "preview": preview,
+    }
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context()
-        page = await context.new_page()
-        await page.goto(url)
-        # Wait for user to finish login manually
-        await asyncio.sleep(timeout_ms / 1000)
-        await context.storage_state(path=str(auth_path))
-        await browser.close()
 
+async def finish_login_session(
+    session: dict[str, Any],
+    profile: str,
+    *,
+    login_url: str,
+    timeout_ms: int = 120_000,
+    poll_interval_ms: int = 5_000,
+) -> str:
+    page = session["page"]
+    context = session["context"]
+    auth_path = session["auth_path"]
+
+    elapsed_ms = 0
+    logged_in = False
+    while elapsed_ms < timeout_ms:
+        await asyncio.sleep(poll_interval_ms / 1000)
+        elapsed_ms += poll_interval_ms
+        current_url = page.url
+        if _looks_logged_in_url(current_url, login_url) and await _is_logged_in(page):
+            logged_in = True
+            break
+
+    if not logged_in:
+        return f"等待登录超时（{timeout_ms // 1000}s），未保存 {profile} 登录态。"
+
+    await context.storage_state(path=str(auth_path))
     return f"已保存 {profile} 登录态 -> {auth_path}"
 
 
-async def screenshot(
-    url: str,
-    *,
-    profile: str | None = None,
-    full_page: bool = False,
-    wait_ms: int = 3000,
-) -> bytes:
-    """Take a screenshot of *url*, optionally with a saved auth profile.
+async def close_login_session(session: dict[str, Any]) -> None:
+    page = session.get("page")
+    context = session.get("context")
+    browser = session.get("browser")
+    playwright = session.get("playwright")
 
-    Returns PNG bytes.
-    """
-    from playwright.async_api import async_playwright
-
-    _ensure_dirs()
-    auth_path = AUTH_DIR / f"{profile}.json" if profile else None
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        ctx_kwargs: dict = {}
-        if auth_path and auth_path.exists():
-            ctx_kwargs["storage_state"] = str(auth_path)
-        # Mobile-ish viewport for cleaner screenshots
-        ctx_kwargs["viewport"] = {"width": 430, "height": 932}
-        context = await browser.new_context(**ctx_kwargs)
-        page = await context.new_page()
-        await page.goto(url, wait_until="networkidle", timeout=30_000)
-        if wait_ms:
-            await asyncio.sleep(wait_ms / 1000)
-        data = await page.screenshot(full_page=full_page)
-        await browser.close()
-
-    return data
-
-
-async def get_page_text(
-    url: str,
-    *,
-    profile: str | None = None,
-    selector: str = "body",
-    wait_ms: int = 3000,
-) -> str:
-    """Get text content from a page element.
-
-    Returns the inner text of the matched *selector*.
-    """
-    from playwright.async_api import async_playwright
-
-    _ensure_dirs()
-    auth_path = AUTH_DIR / f"{profile}.json" if profile else None
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        ctx_kwargs: dict = {}
-        if auth_path and auth_path.exists():
-            ctx_kwargs["storage_state"] = str(auth_path)
-        context = await browser.new_context(**ctx_kwargs)
-        page = await context.new_page()
-        await page.goto(url, wait_until="networkidle", timeout=30_000)
-        if wait_ms:
-            await asyncio.sleep(wait_ms / 1000)
-        text = await page.inner_text(selector)
-        await browser.close()
-
-    return text[:4000]  # Truncate to avoid flooding
+    try:
+        if page is not None:
+            await page.close()
+    except Exception:
+        pass
+    try:
+        if context is not None:
+            await context.close()
+    except Exception:
+        pass
+    try:
+        if browser is not None:
+            await browser.close()
+    except Exception:
+        pass
+    try:
+        if playwright is not None:
+            await playwright.stop()
+    except Exception:
+        pass

@@ -40,6 +40,7 @@ class CompressionService:
             base_url=settings.base_url,
             api_key=settings.api_key,
             model=settings.model,
+            show_api_payload=settings.show_api_payload,
         )
 
     def compress_history(self, *, channel_id: int) -> dict[str, Any] | None:

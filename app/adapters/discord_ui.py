@@ -1,5 +1,3 @@
-"""Discord UI components – modals, views, and buttons for the toolbox."""
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -10,6 +8,26 @@ from app.config.settings import read_env_values, update_env_values
 
 if TYPE_CHECKING:
     from app.adapters.discord_bot import DiscordBot
+
+
+class BrowserLoginModal(discord.ui.Modal, title="浏览器登录"):
+    def __init__(self, bot: DiscordBot):
+        super().__init__()
+        self.bot = bot
+        self.app = discord.ui.TextInput(
+            label="应用名称",
+            default="bilibili",
+            required=True,
+            max_length=80,
+            placeholder="如 bilibili、xiaohongshu",
+        )
+        self.add_item(self.app)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self.bot.handle_browser_login(
+            interaction,
+            app=self.app.value.strip(),
+        )
 
 
 class ApiConfigModal(discord.ui.Modal, title="聊天 API 配置"):
@@ -422,10 +440,6 @@ class TypingNudgeModal(discord.ui.Modal, title="表情|打字 设置"):
         )
 
 
-# ---------------------------------------------------------------------------
-# Sub-panel: API 配置
-# ---------------------------------------------------------------------------
-
 class ApiToolboxView(discord.ui.View):
     def __init__(self, bot: DiscordBot):
         super().__init__(timeout=300)
@@ -450,10 +464,6 @@ class ApiToolboxView(discord.ui.View):
             view=ToolboxView(self.bot),
         )
 
-
-# ---------------------------------------------------------------------------
-# Sub-panel: 提示词编辑
-# ---------------------------------------------------------------------------
 
 class PromptToolboxView(discord.ui.View):
     def __init__(self, bot: DiscordBot):
@@ -483,10 +493,6 @@ class PromptToolboxView(discord.ui.View):
             view=ToolboxView(self.bot),
         )
 
-
-# ---------------------------------------------------------------------------
-# Sub-panel: 主动消息
-# ---------------------------------------------------------------------------
 
 class ProactiveToolboxView(discord.ui.View):
     def __init__(self, bot: DiscordBot):
@@ -521,9 +527,29 @@ class ProactiveToolboxView(discord.ui.View):
         )
 
 
-# ---------------------------------------------------------------------------
-# Sub-panel: 聊天控制
-# ---------------------------------------------------------------------------
+class SocialToolboxView(discord.ui.View):
+    def __init__(self, bot: DiscordBot):
+        super().__init__(timeout=300)
+        self.bot = bot
+
+    @discord.ui.button(label="浏览器登录", style=discord.ButtonStyle.primary)
+    async def browser_login(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(BrowserLoginModal(self.bot))
+
+    @discord.ui.button(label="登录态列表", style=discord.ButtonStyle.primary)
+    async def browser_profiles(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(
+            content=self.bot.browser_profiles_text(),
+            view=SocialToolboxView(self.bot),
+        )
+
+    @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(
+            content="工具箱",
+            view=ToolboxView(self.bot),
+        )
+
 
 class ContextEntriesModal(discord.ui.Modal, title="上下文条数"):
     def __init__(self, bot: DiscordBot):
@@ -559,7 +585,6 @@ class ChatControlView(discord.ui.View):
         super().__init__(timeout=300)
         self.bot = bot
 
-        # Split mode toggle (no checkmark)
         is_novel = bot.settings.split_mode == "novel"
         split_label = "小说模式" if is_novel else "聊天模式"
         self.split_btn = discord.ui.Button(
@@ -569,7 +594,6 @@ class ChatControlView(discord.ui.View):
         self.split_btn.callback = self._toggle_split_mode
         self.add_item(self.split_btn)
 
-        # Typing wait toggle (no checkmark)
         tw = bot.settings.typing_wait
         tw_label = "等待输入" if tw else "即时回复"
         self.tw_btn = discord.ui.Button(
@@ -612,10 +636,6 @@ class ChatControlView(discord.ui.View):
         )
 
 
-# ---------------------------------------------------------------------------
-# Main: 工具箱
-# ---------------------------------------------------------------------------
-
 class ToolboxView(discord.ui.View):
     def __init__(self, bot: DiscordBot):
         super().__init__(timeout=300)
@@ -647,4 +667,11 @@ class ToolboxView(discord.ui.View):
         await interaction.response.edit_message(
             content="提示词编辑",
             view=PromptToolboxView(self.bot),
+        )
+
+    @discord.ui.button(label="社交平台", style=discord.ButtonStyle.secondary)
+    async def social(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(
+            content="社交平台",
+            view=SocialToolboxView(self.bot),
         )

@@ -6,7 +6,6 @@ from app.config.settings import Settings
 from app.infra.llm_client import LLMClient, LLMResponse, VisionClient
 from app.services.prompt_service import PromptService
 
-# Available in normal conversation — only for user-requested alarms
 ALARM_TOOLS: list[dict[str, Any]] = [
     {
         "name": "set_timer",
@@ -51,7 +50,25 @@ SEARCH_TOOL: dict[str, Any] = {
     },
 }
 
-# Available during timer/alarm fires — bot can also set voluntary timers
+REACTION_TOOL: dict[str, Any] = {
+    "name": "add_reaction",
+    "description": (
+        "给当前正在回复的那条用户 Discord 消息添加一个表情反应。"
+        "仅当一个简短表情比发文字更合适时使用。"
+        "emoji 传单个 Unicode 表情或 Discord 自定义表情字符串。"
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "emoji": {
+                "type": "string",
+                "description": "要添加的表情，例如 ❤️、🥺、😂。",
+            },
+        },
+        "required": ["emoji"],
+    },
+}
+
 TIMER_TOOLS: list[dict[str, Any]] = [
     {
         "name": "set_timer",
@@ -102,8 +119,8 @@ class ReplyService:
             base_url=settings.base_url,
             api_key=settings.api_key,
             model=settings.model,
+            show_api_payload=settings.show_api_payload,
         )
-        # Build vision client with main-model fallback when a separate vision model is configured
         main_vision = VisionClient(
             base_url=settings.base_url,
             api_key=settings.api_key,
@@ -118,6 +135,12 @@ class ReplyService:
             )
         else:
             self.vision_client = main_vision
+
+    def set_debug_context_meta(self, *, estimated_tokens: int, limit: int) -> None:
+        self.client.debug_context_meta = {
+            "estimated_tokens": estimated_tokens,
+            "limit": limit,
+        }
 
     def generate_reply(self, messages: list[dict[str, str]]) -> str:
         if not messages:
@@ -136,6 +159,7 @@ class ReplyService:
             return LLMResponse(text="哎，我字呢？")
 
         tools = TIMER_TOOLS if include_tools else ALARM_TOOLS
+        tools = tools + [REACTION_TOOL]
         if include_search:
             tools = tools + [SEARCH_TOOL]
         return self.client.generate_with_tools(
@@ -157,6 +181,6 @@ class ReplyService:
         return self.client.stream_with_tools(
             messages=messages,
             system_prompt=load_system_prompt(),
-            tools=(TIMER_TOOLS if include_tools else ALARM_TOOLS) + [SEARCH_TOOL],
+            tools=(TIMER_TOOLS if include_tools else ALARM_TOOLS) + [REACTION_TOOL, SEARCH_TOOL],
             on_text=on_text,
         )

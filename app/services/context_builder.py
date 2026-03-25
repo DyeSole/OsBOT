@@ -24,6 +24,17 @@ class ContextBuilder:
             block for block in [summary_block, live_block, pending_block] if block
         ).strip()
 
+    def build_live_block(self, *, channel_id: int) -> str:
+        return self.history_store.render_entries(
+            self.history_store.load_all_entries(channel_id=channel_id)
+        )
+
+    @staticmethod
+    def estimate_tokens(text: str) -> int:
+        if not text:
+            return 0
+        return max(1, len(text) // 4)
+
     def _render_summary_block(self, *, channel_id: int) -> str:
         segments = self.compression_store.load_summary_segments(channel_id=channel_id)
         if not segments:

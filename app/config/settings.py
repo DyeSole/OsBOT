@@ -25,18 +25,19 @@ class Settings:
     typing_detect_delay_seconds: float = 1.0
     reset_timer_seconds: float = 3.0
     proactive_idle_seconds: float = 300.0
-    typing_wait: bool = True   # True = wait for typing idle, False = reply immediately
-    split_mode: str = "chat"  # "chat" = split by newline, "novel" = no split
-    chat_reply_delay_seconds: float = 0.8  # pause between split messages in chat mode
-    typing_nudge_seconds: float = 60.0  # seconds before typing/reaction nudge fires
-    watch_online_idle_seconds: float = 600.0  # seconds to wait after watched user comes online
+    typing_wait: bool = True
+    split_mode: str = "chat"
+    chat_reply_delay_seconds: float = 0.8
+    typing_nudge_seconds: float = 60.0
+    watch_online_idle_seconds: float = 600.0
     quiet_enabled: bool = False
-    quiet_start: str = ""   # e.g. "23:00"
-    quiet_end: str = ""     # e.g. "07:00"
-    watch_user_ids: list[str] = None  # up to 6 Discord user IDs to monitor presence
-    jealousy_channel_ids: list[str] = None  # channel IDs where typing triggers jealousy
-    context_entries: int = 20  # number of recent history entries for proactive/alarm/jealousy contexts
-    search_base_url: str = ""  # Grok/xAI API base URL for web search (empty = DuckDuckGo)
+    quiet_start: str = ""
+    quiet_end: str = ""
+    watch_user_ids: list[str] = None
+    jealousy_channel_ids: list[str] = None
+    context_entries: int = 20
+    transcript_max_tokens: int = 20000
+    search_base_url: str = ""
     search_api_key: str = ""
     search_model: str = ""
     vision_base_url: str = ""
@@ -116,6 +117,7 @@ def load_settings() -> Settings:
     jealousy_channel_ids = [cid.strip() for cid in raw_jealousy.split(",") if cid.strip()] if raw_jealousy else []
 
     context_entries = int(_env_value("CONTEXT_ENTRIES", env_file, "20").strip() or "20")
+    transcript_max_tokens = int(_env_value("TRANSCRIPT_MAX_TOKENS", env_file, "20000").strip() or "20000")
 
     search_base_url = _env_value("SEARCH_BASE_URL", env_file, "").strip()
     search_api_key = _env_value("SEARCH_API_KEY", env_file, "").strip()
@@ -143,6 +145,7 @@ def load_settings() -> Settings:
         typing_nudge_seconds=max(0.0, typing_nudge_seconds),
         watch_online_idle_seconds=max(0.0, watch_online_idle_seconds),
         context_entries=max(1, context_entries),
+        transcript_max_tokens=max(1000, transcript_max_tokens),
         typing_wait=typing_wait,
         chat_reply_delay_seconds=max(0.0, chat_reply_delay_seconds),
         split_mode=split_mode,
@@ -183,6 +186,7 @@ def summarize_settings(settings: Settings) -> dict[str, Any]:
         "PROACTIVE_IDLE_SECONDS": settings.proactive_idle_seconds,
         "TYPING_NUDGE_SECONDS": settings.typing_nudge_seconds,
         "CONTEXT_ENTRIES": settings.context_entries,
+        "TRANSCRIPT_MAX_TOKENS": settings.transcript_max_tokens,
         "WATCH_ONLINE_IDLE_SECONDS": settings.watch_online_idle_seconds,
         "TYPING_WAIT": settings.typing_wait,
         "CHAT_REPLY_DELAY_SECONDS": settings.chat_reply_delay_seconds,
