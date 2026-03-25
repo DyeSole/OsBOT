@@ -209,7 +209,7 @@ class DiscordBot:
                     ephemeral=True,
                 )
 
-        @self.tree.command(name="导入Cookie", description="从JSON文件导入浏览器Cookie")
+        @self.tree.command(name="导入cookie", description="从JSON文件导入浏览器Cookie")
         @discord.app_commands.describe(
             profile="登录态名称（如 bilibili、xiaohongshu）",
             file="Cookie JSON 文件",
