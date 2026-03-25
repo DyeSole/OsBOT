@@ -103,11 +103,21 @@ class ReplyService:
             api_key=settings.api_key,
             model=settings.model,
         )
-        self.vision_client = VisionClient(
-            base_url=settings.vision_base_url or settings.base_url,
-            api_key=settings.vision_api_key or settings.api_key,
-            model=settings.vision_model or settings.model,
+        # Build vision client with main-model fallback when a separate vision model is configured
+        main_vision = VisionClient(
+            base_url=settings.base_url,
+            api_key=settings.api_key,
+            model=settings.model,
         )
+        if settings.vision_base_url or settings.vision_model:
+            self.vision_client = VisionClient(
+                base_url=settings.vision_base_url or settings.base_url,
+                api_key=settings.vision_api_key or settings.api_key,
+                model=settings.vision_model or settings.model,
+                fallback=main_vision,
+            )
+        else:
+            self.vision_client = main_vision
 
     def generate_reply(self, messages: list[dict[str, str]]) -> str:
         if not messages:

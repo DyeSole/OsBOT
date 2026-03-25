@@ -325,10 +325,11 @@ class VisionClient:
     ANTHROPIC_VERSION = "2023-06-01"
     DESCRIBE_PROMPT = "请用简洁的中文描述这张图片的内容，包括画面中的主要元素、场景和氛围。"
 
-    def __init__(self, base_url: str, api_key: str, model: str):
+    def __init__(self, base_url: str, api_key: str, model: str, *, fallback: "VisionClient | None" = None):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.fallback = fallback
 
     @property
     def available(self) -> bool:
@@ -413,20 +414,32 @@ class VisionClient:
             )
             if resp.status_code >= 400:
                 log.warning("vision api http %d: %s", resp.status_code, resp.text[:200])
+                if self.fallback:
+                    log.info("vision falling back to main model")
+                    return self.fallback.describe_image(image_bytes, media_type)
                 return None
 
             data = resp.json()
 
             if self._is_anthropic():
                 content = data.get("content", [])
-                return LLMClient._extract_text_from_blocks(content) or None
+                result = LLMClient._extract_text_from_blocks(content) or None
             else:
                 choices = data.get("choices") or []
                 if not choices:
-                    return None
-                msg = choices[0].get("message", {})
-                return LLMClient._extract_text_from_blocks(msg.get("content")) or None
+                    result = None
+                else:
+                    msg = choices[0].get("message", {})
+                    result = LLMClient._extract_text_from_blocks(msg.get("content")) or None
+
+            if result is None and self.fallback:
+                log.info("vision empty result, falling back to main model")
+                return self.fallback.describe_image(image_bytes, media_type)
+            return result
 
         except Exception:
             log.exception("vision describe_image failed")
+            if self.fallback:
+                log.info("vision exception, falling back to main model")
+                return self.fallback.describe_image(image_bytes, media_type)
             return None
