@@ -1302,7 +1302,8 @@ class DiscordBot:
         self.logger.info(f"👁️ watch_idle_fire user={user_id} ch={channel_id}")
         recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
         transcript = self.history_store.render_entries(recent) if recent else ""
-        timer_note = "[系统提示] 你关注的用户已经上线十分钟了但没有说话，主动关心一下对方吧。注意要自然，不要让对方觉得你在监视。"
+        minutes = int(self.watch_online_idle_seconds // 60) or 1
+        timer_note = f"[系统提示] 你关注的用户已经上线{minutes}分钟了但没有说话，主动关心一下对方吧。注意要自然，不要让对方觉得你在监视。"
         if transcript:
             transcript = f"{transcript}\n{timer_note}"
         else:
