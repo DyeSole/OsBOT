@@ -24,6 +24,16 @@ from app.services.reply_service import ReplyService
 from app.adapters.discord_ui import ToolboxView
 
 
+LOGIN_TARGETS: dict[str, tuple[str, str]] = {
+    "bilibili": ("bilibili", "https://passport.bilibili.com/login"),
+    "b站": ("bilibili", "https://passport.bilibili.com/login"),
+    "哔哩哔哩": ("bilibili", "https://passport.bilibili.com/login"),
+    "xiaohongshu": ("xiaohongshu", "https://www.xiaohongshu.com"),
+    "小红书": ("xiaohongshu", "https://www.xiaohongshu.com"),
+    "rednote": ("xiaohongshu", "https://www.xiaohongshu.com"),
+}
+
+
 @dataclass
 class TypingSession:
     started_at: float
@@ -189,22 +199,24 @@ class DiscordBot:
                     ephemeral=True,
                 )
 
-        @self.tree.command(name="浏览器登录", description="打开浏览器手动登录并保存登录态")
+        @self.tree.command(name="浏览器登录", description="输入应用名后打开登录页并保存登录态")
         @discord.app_commands.describe(
-            profile="登录态名称（如 bilibili、xiaohongshu）",
-            url="登录页面URL",
+            app="应用名称（如 bilibili、xiaohongshu）",
         )
         async def browser_login(
             interaction: discord.Interaction,
-            profile: str,
-            url: str,
+            app: str,
         ) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
             try:
                 from app.infra.browser_client import save_login
 
+                profile, url, source = await self._resolve_login_target(app)
                 msg = await save_login(profile, url, timeout_ms=120_000)
-                await interaction.followup.send(msg, ephemeral=True)
+                await interaction.followup.send(
+                    f"应用: {app}\n登录页: {url}\n来源: {source}\n{msg}",
+                    ephemeral=True,
+                )
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("BROWSER", "login save failed", exc=exc)
                 await interaction.followup.send(
@@ -268,6 +280,47 @@ class DiscordBot:
                 "CONFIG",
                 "DISCORD_BOT_TOKEN changed in .env but live token swap is not supported; restart required.",
             )
+
+    @staticmethod
+    def _slugify_profile(value: str) -> str:
+        profile = re.sub(r"[^\w.-]+", "_", value.strip().lower(), flags=re.UNICODE).strip("._")
+        return profile or "browser"
+
+    @staticmethod
+    def _pick_login_url(results: list[dict[str, str]]) -> str:
+        for item in results:
+            href = str(item.get("href", "")).strip()
+            if href.startswith(("http://", "https://")):
+                return href
+        return ""
+
+    async def _resolve_login_target(self, app: str) -> tuple[str, str, str]:
+        app_name = app.strip()
+        if not app_name:
+            raise ValueError("应用名称不能为空")
+
+        preset = LOGIN_TARGETS.get(app_name.lower())
+        if preset is None:
+            preset = LOGIN_TARGETS.get(app_name)
+        if preset is not None:
+            profile, url = preset
+            return profile, url, "preset"
+
+        from app.infra.search_client import web_search
+
+        query = f"{app_name} 官方登录页"
+        results = await asyncio.to_thread(
+            web_search,
+            query,
+            max_results=5,
+            base_url=self.settings.search_base_url,
+            api_key=self.settings.search_api_key,
+            model=self.settings.search_model,
+        )
+        url = self._pick_login_url(results)
+        if not url:
+            raise RuntimeError(f"未找到 {app_name} 的登录页，请后续补充预设站点。")
+        return self._slugify_profile(app_name), url, "search"
 
     async def reload_settings_if_needed(self) -> bool:
         current_mtime = env_last_modified()
