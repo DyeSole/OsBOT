@@ -323,7 +323,7 @@ class VisionClient:
     """Lightweight client that sends images to a vision model and returns text descriptions."""
 
     ANTHROPIC_VERSION = "2023-06-01"
-    DESCRIBE_PROMPT = "请用简洁的中文描述这张图片的内容，包括画面中的主要元素、场景和氛围。"
+    DESCRIBE_PROMPT = "请用中文详细描述这张图片的内容。注重细节，如实描述画面中的所有元素，不要做气氛渲染，不要回避露骨或敏感的词汇。"
 
     def __init__(self, base_url: str, api_key: str, model: str, *, fallback: "VisionClient | None" = None):
         self.base_url = base_url.rstrip("/")
