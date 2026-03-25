@@ -35,17 +35,14 @@ class ChatHistoryStore:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def load_all_entries(self, *, channel_id: int) -> list[dict[str, str]]:
-        """Load all message entries, skipping marker lines."""
         return self._read_jsonl_entries(self._history_path(channel_id))
 
     def load_entries_after_marker(self, *, channel_id: int) -> list[dict[str, str]]:
-        """Load only entries after the last compression marker."""
         path = self._history_path(channel_id)
         if not path.exists():
             return []
 
         all_lines = path.read_text(encoding="utf-8").splitlines()
-        # Find the last marker position
         last_marker = -1
         for i, raw in enumerate(all_lines):
             raw = raw.strip()
@@ -58,7 +55,6 @@ class ChatHistoryStore:
             if isinstance(row, dict) and row.get("__compressed__"):
                 last_marker = i
 
-        # Parse only lines after the last marker
         entries: list[dict[str, str]] = []
         start = last_marker + 1 if last_marker >= 0 else 0
         for raw in all_lines[start:]:
@@ -77,7 +73,6 @@ class ChatHistoryStore:
         return entries
 
     def reset_active_history(self, *, channel_id: int, keep: int = 30) -> None:
-        """Rewrite active history: keep last N entries + compression marker."""
         path = self._history_path(channel_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         entries = self._read_jsonl_entries(path)
@@ -145,7 +140,6 @@ class ChatHistoryStore:
         return entries
 
     def pop_last_by_role(self, *, channel_id: int, role: str) -> dict[str, str] | None:
-        """Remove and return the last entry with the given role. Returns None if not found."""
         path = self._history_path(channel_id)
         if not path.exists():
             return None

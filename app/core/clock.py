@@ -1,9 +1,3 @@
-"""Timezone-aware clock utility.
-
-Reads the ``TZ`` environment variable (e.g. ``Asia/Shanghai``) so that
-``now()`` returns local time even on cloud servers that default to UTC.
-"""
-
 from __future__ import annotations
 
 import os
@@ -20,7 +14,7 @@ def _load_tz() -> tzinfo | None:
     _tz_loaded = True
     tz_name = os.environ.get("TZ", "").strip()
     if not tz_name:
-        return None  # fall back to system local time
+        return None
     try:
         import zoneinfo
         _tz = zoneinfo.ZoneInfo(tz_name)  # type: ignore[assignment]
@@ -30,7 +24,6 @@ def _load_tz() -> tzinfo | None:
 
 
 def now() -> datetime:
-    """Return the current datetime in the configured timezone."""
     tz = _load_tz()
     if tz is not None:
         return datetime.now(tz)
@@ -38,5 +31,4 @@ def now() -> datetime:
 
 
 def now_clock() -> str:
-    """Return current time as ``YYYY-MM-DD HH:MM:SS`` string."""
     return now().strftime("%Y-%m-%d %H:%M:%S")

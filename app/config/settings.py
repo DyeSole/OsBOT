@@ -87,6 +87,8 @@ def _env_bool(name: str, env_file: dict[str, str], default: bool) -> bool:
 
 def load_settings() -> Settings:
     env_file = _read_env_file(ENV_PATH)
+    if "TZ" in env_file:
+        os.environ["TZ"] = env_file["TZ"]
     bot_key = _env_value("BOT_KEY", env_file, "Haze").strip() or "Haze"
     mode = _env_value("APP_MODE", env_file, "normal").strip().lower() or "normal"
 

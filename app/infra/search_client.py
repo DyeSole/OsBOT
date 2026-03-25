@@ -17,7 +17,6 @@ def web_search(
     context: str = "",
     soul: str = "",
 ) -> list[dict[str, str]]:
-    """Search the web. Uses Grok/xAI if configured, otherwise DuckDuckGo."""
     if base_url and api_key:
         return _grok_search(query, base_url=base_url, api_key=api_key, model=model, max_results=max_results, context=context, soul=soul)
     return _ddg_search(query, max_results=max_results)
@@ -46,7 +45,6 @@ def _grok_search(
     context: str = "",
     soul: str = "",
 ) -> list[dict[str, str]]:
-    """Use Grok/xAI API with web search to get results."""
     use_model = model or "grok-4.1-fast"
 
     system_prompt = (
@@ -59,7 +57,6 @@ def _grok_search(
     if context:
         system_prompt += f"\n\n以下是用户最近的聊天记录，帮助你理解搜索意图：\n{context}"
 
-    # Use httpx directly to ensure search_parameters is sent correctly
     url = f"{base_url.rstrip('/')}/chat/completions"
     resp = httpx.post(
         url,
@@ -82,7 +79,6 @@ def _grok_search(
     data = resp.json()
 
     text = (data["choices"][0]["message"]["content"] or "").strip()
-    # Extract JSON array from response
     match = re.search(r"\[.*\]", text, re.DOTALL)
     if not match:
         return []

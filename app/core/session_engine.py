@@ -20,8 +20,6 @@ class PendingReplySession:
 
 
 class SessionEngine:
-    """State machine for per-user pending reply sessions."""
-
     def __init__(self) -> None:
         self._sessions: dict[tuple[int, int], PendingReplySession] = {}
 
@@ -58,10 +56,6 @@ class SessionEngine:
         now: float,
         now_clock: str,
     ) -> tuple[PendingReplySession, bool]:
-        """Add/update a user message in the pending session.
-
-        Returns: (session, opened_new_session)
-        """
         key = self.key(channel_id, user_id)
         session = self._sessions.get(key)
         if session is None:
@@ -95,11 +89,9 @@ class SessionEngine:
         reset_timer_seconds: float,
         session_timeout_seconds: float,
     ) -> tuple[bool, float]:
-        """Return (ready_to_dispatch, sleep_seconds)."""
         idle_for = now - session.last_activity_at
         total_for = now - session.first_at
 
-        # Stage 1: always hold for the initial detect window after buffer opens.
         if total_for < typing_detect_delay_seconds:
             return False, max(0.05, min(0.5, typing_detect_delay_seconds - total_for))
 
@@ -112,9 +104,7 @@ class SessionEngine:
                 return True, 0.0
             wait_idle = reset_timer_seconds - idle_for
 
-        # Hard guard to avoid never-ending loops under pathological activity.
         if total_for >= max(session_timeout_seconds * 4, 60.0):
             return True, 0.0
 
         return False, max(0.05, min(0.5, wait_idle))
-

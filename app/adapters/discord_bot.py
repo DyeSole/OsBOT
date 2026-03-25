@@ -1341,6 +1341,8 @@ class DiscordBot:
     async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
         if after.author.bot:
             return
+        if before.content == after.content:
+            return
         new_text = (after.content or "").strip()
         if not new_text:
             return
