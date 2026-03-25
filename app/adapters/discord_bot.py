@@ -763,10 +763,12 @@ class DiscordBot:
         to history.
         """
         from app.infra.search_client import web_search
+        from app.services.reply_service import load_system_prompt
 
         self.logger.info(f"🔍 web_search query={query} depth={search_depth}")
         recent_entries = self.history_store.load_all_entries(channel_id=channel_id)
         context_hint = self.history_store.render_entries(recent_entries[-10:]) if recent_entries else ""
+        soul = load_system_prompt()
         try:
             results = await asyncio.to_thread(
                 web_search,
@@ -775,6 +777,7 @@ class DiscordBot:
                 api_key=self.settings.search_api_key,
                 model=self.settings.search_model,
                 context=context_hint,
+                soul=soul,
             )
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "web search failed", exc=exc)
@@ -1600,6 +1603,9 @@ class DiscordBot:
         if not has_images:
             return []
 
+        from app.services.reply_service import load_system_prompt
+        soul = load_system_prompt()
+
         status_msg = await message.channel.send("正在识图...")
         descriptions: list[str] = []
 
@@ -1610,8 +1616,9 @@ class DiscordBot:
                 continue
             try:
                 image_bytes = await att.read()
+                import functools
                 desc = await asyncio.get_event_loop().run_in_executor(
-                    None, vision.describe_image, image_bytes, media_type,
+                    None, functools.partial(vision.describe_image, image_bytes, media_type, system_prompt=soul),
                 )
                 if desc:
                     descriptions.append(f"[图片: {desc}]")

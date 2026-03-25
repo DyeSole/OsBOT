@@ -15,10 +15,11 @@ def web_search(
     api_key: str = "",
     model: str = "",
     context: str = "",
+    soul: str = "",
 ) -> list[dict[str, str]]:
     """Search the web. Uses Grok/xAI if configured, otherwise DuckDuckGo."""
     if base_url and api_key:
-        return _grok_search(query, base_url=base_url, api_key=api_key, model=model, max_results=max_results, context=context)
+        return _grok_search(query, base_url=base_url, api_key=api_key, model=model, max_results=max_results, context=context, soul=soul)
     return _ddg_search(query, max_results=max_results)
 
 
@@ -43,6 +44,7 @@ def _grok_search(
     model: str = "",
     max_results: int = 5,
     context: str = "",
+    soul: str = "",
 ) -> list[dict[str, str]]:
     """Use Grok/xAI API with web search to get results."""
     use_model = model or "grok-4.1-fast"
@@ -52,6 +54,8 @@ def _grok_search(
         "必须严格按以下JSON格式返回，不要包含其他内容：\n"
         '[{"title": "标题", "href": "链接URL", "body": "摘要"}]'
     )
+    if soul:
+        system_prompt += f"\n\n{soul}"
     if context:
         system_prompt += f"\n\n以下是用户最近的聊天记录，帮助你理解搜索意图：\n{context}"
 
