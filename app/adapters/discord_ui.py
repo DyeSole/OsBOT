@@ -479,7 +479,7 @@ class ProactiveToolboxView(discord.ui.View):
     async def watch_online_time(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(WatchOnlineTimeModal(self.bot))
 
-@discord.ui.button(label="频道偷窥", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="频道偷窥", style=discord.ButtonStyle.primary)
     async def jealousy_channels(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(JealousyChannelsModal(self.bot))
 
