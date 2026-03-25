@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import re
 
+import httpx
 from duckduckgo_search import DDGS
-from openai import OpenAI
 
 
 def web_search(
@@ -45,8 +45,7 @@ def _grok_search(
     context: str = "",
 ) -> list[dict[str, str]]:
     """Use Grok/xAI API with web search to get results."""
-    client = OpenAI(base_url=base_url, api_key=api_key)
-    use_model = model or "grok-3-mini-fast"
+    use_model = model or "grok-4.1-fast"
 
     system_prompt = (
         f"你是一个搜索助手。请根据用户的搜索关键词进行联网搜索，返回最多{max_results}条结果。"
@@ -56,16 +55,29 @@ def _grok_search(
     if context:
         system_prompt += f"\n\n以下是用户最近的聊天记录，帮助你理解搜索意图：\n{context}"
 
-    response = client.chat.completions.create(
-        model=use_model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": query},
-        ],
-        extra_body={"search_parameters": {"mode": "auto"}},
+    # Use httpx directly to ensure search_parameters is sent correctly
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    resp = httpx.post(
+        url,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        json={
+            "model": use_model,
+            "stream": False,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": query},
+            ],
+            "search_parameters": {"mode": "auto"},
+        },
+        timeout=60,
     )
+    resp.raise_for_status()
+    data = resp.json()
 
-    text = (response.choices[0].message.content or "").strip()
+    text = (data["choices"][0]["message"]["content"] or "").strip()
     # Extract JSON array from response
     match = re.search(r"\[.*\]", text, re.DOTALL)
     if not match:
