@@ -81,9 +81,18 @@ class VisionConfigModal(discord.ui.Modal, title="识图 API 配置"):
             max_length=120,
             placeholder="留空则使用聊天 API 的 MODEL",
         )
+        self.vision_prompt = discord.ui.TextInput(
+            label="VISION_PROMPT（识图系统提示词）",
+            style=discord.TextStyle.paragraph,
+            default=env_values.get("VISION_PROMPT", current.vision_prompt),
+            required=False,
+            max_length=800,
+            placeholder="留空则不传 system prompt",
+        )
         self.add_item(self.vision_base_url)
         self.add_item(self.vision_api_key)
         self.add_item(self.vision_model)
+        self.add_item(self.vision_prompt)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         update_env_values(
@@ -91,6 +100,7 @@ class VisionConfigModal(discord.ui.Modal, title="识图 API 配置"):
                 "VISION_BASE_URL": self.vision_base_url.value.strip(),
                 "VISION_API_KEY": self.vision_api_key.value.strip(),
                 "VISION_MODEL": self.vision_model.value.strip(),
+                "VISION_PROMPT": self.vision_prompt.value.strip(),
             }
         )
         await interaction.response.edit_message(

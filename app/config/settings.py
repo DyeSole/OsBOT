@@ -42,6 +42,7 @@ class Settings:
     vision_base_url: str = ""
     vision_api_key: str = ""
     vision_model: str = ""
+    vision_prompt: str = ""
 
     def __post_init__(self) -> None:
         if self.watch_user_ids is None:
@@ -123,6 +124,7 @@ def load_settings() -> Settings:
     vision_base_url = _env_value("VISION_BASE_URL", env_file, "").strip()
     vision_api_key = _env_value("VISION_API_KEY", env_file, "").strip()
     vision_model = _env_value("VISION_MODEL", env_file, "").strip()
+    vision_prompt = _env_value("VISION_PROMPT", env_file, "").strip()
 
     return Settings(
         bot_key=bot_key,
@@ -155,6 +157,7 @@ def load_settings() -> Settings:
         vision_base_url=vision_base_url,
         vision_api_key=vision_api_key,
         vision_model=vision_model,
+        vision_prompt=vision_prompt,
     )
 
 

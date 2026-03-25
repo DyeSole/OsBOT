@@ -1603,6 +1603,7 @@ class DiscordBot:
         if not has_images:
             return []
 
+        vision_prompt = self.settings.vision_prompt
         status_msg = await message.channel.send("正在识图...")
         descriptions: list[str] = []
 
@@ -1615,7 +1616,7 @@ class DiscordBot:
                 image_bytes = await att.read()
                 import functools
                 desc = await asyncio.get_event_loop().run_in_executor(
-                    None, functools.partial(vision.describe_image, image_bytes, media_type),
+                    None, functools.partial(vision.describe_image, image_bytes, media_type, system_prompt=vision_prompt),
                 )
                 if desc:
                     descriptions.append(f"[图片: {desc}]")
