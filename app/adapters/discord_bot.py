@@ -1677,6 +1677,23 @@ class DiscordBot:
 
         return descriptions
 
+    async def _fetch_url_previews(self, text: str) -> list[str]:
+        from app.infra.browser_client import extract_urls, fetch_page_content
+
+        urls = extract_urls(text)
+        if not urls:
+            return []
+
+        descriptions: list[str] = []
+        for url in urls[:3]:
+            try:
+                content = await fetch_page_content(url)
+                if content:
+                    descriptions.append(f"[链接内容: {content}]")
+            except Exception:
+                self.logger.error("BROWSER", f"failed to fetch {url}")
+        return descriptions
+
     async def on_message(self, message: discord.Message) -> None:
         await self.reload_settings_if_needed()
         if message.author.bot:
@@ -1690,6 +1707,10 @@ class DiscordBot:
         image_descs = await self._describe_attachments(message)
         if image_descs:
             text = (text + "\n" if text else "") + "\n".join(image_descs)
+
+        url_descs = await self._fetch_url_previews(text)
+        if url_descs:
+            text = text + "\n" + "\n".join(url_descs)
 
         if not text:
             return

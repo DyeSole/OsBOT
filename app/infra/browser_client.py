@@ -1,11 +1,31 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "browser"
 AUTH_DIR = DATA_DIR / "auth"
+
+DOMAIN_PROFILE: dict[str, str] = {
+    "bilibili.com": "bilibili",
+    "b23.tv": "bilibili",
+    "xiaohongshu.com": "xiaohongshu",
+    "xhslink.com": "xiaohongshu",
+}
+
+CONTENT_SELECTORS: dict[str, dict[str, str]] = {
+    "bilibili": {
+        "title": "h1.video-title, .video-title",
+        "desc": ".basic-desc-info, .desc-info-text",
+        "author": ".up-name",
+        "stats": ".video-data-list",
+    },
+}
+
+URL_PATTERN = re.compile(r"https?://[^\s<>\"']+")
 
 QR_SELECTORS: dict[str, list[str]] = {
     "bilibili": [
@@ -149,3 +169,82 @@ async def close_login_session(session: dict[str, Any]) -> None:
             await playwright.stop()
     except Exception:
         pass
+
+
+def _match_profile(url: str) -> str | None:
+    host = urlparse(url).hostname or ""
+    for domain, profile in DOMAIN_PROFILE.items():
+        if host == domain or host.endswith("." + domain):
+            auth_path = AUTH_DIR / f"{profile}.json"
+            if auth_path.exists():
+                return profile
+    return None
+
+
+def extract_urls(text: str) -> list[str]:
+    return [u for u in URL_PATTERN.findall(text) if _match_profile(u)]
+
+
+async def _extract_with_selectors(page, profile: str) -> dict[str, str]:
+    selectors = CONTENT_SELECTORS.get(profile, {})
+    result: dict[str, str] = {}
+    for key, sel in selectors.items():
+        try:
+            locator = page.locator(sel).first
+            if await locator.is_visible():
+                result[key] = (await locator.inner_text()).strip()
+        except Exception:
+            continue
+    return result
+
+
+async def _extract_fallback(page) -> str:
+    title = await page.title() or ""
+    try:
+        meta = page.locator('meta[name="description"]').first
+        desc = await meta.get_attribute("content") or ""
+    except Exception:
+        desc = ""
+    parts = [p for p in [title, desc] if p]
+    return " | ".join(parts)
+
+
+async def fetch_page_content(url: str) -> str | None:
+    from playwright.async_api import async_playwright
+
+    profile = _match_profile(url)
+    if not profile:
+        return None
+
+    _ensure_dirs()
+    auth_path = AUTH_DIR / f"{profile}.json"
+    pw = await async_playwright().start()
+    try:
+        browser = await pw.chromium.launch(headless=True)
+        context = await browser.new_context(storage_state=str(auth_path))
+        page = await context.new_page()
+        await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        await asyncio.sleep(2)
+
+        extracted = await _extract_with_selectors(page, profile)
+        if extracted:
+            parts = []
+            if extracted.get("title"):
+                parts.append(extracted["title"])
+            if extracted.get("author"):
+                parts.append(f"UP主: {extracted['author']}")
+            if extracted.get("desc"):
+                parts.append(extracted["desc"])
+            if extracted.get("stats"):
+                parts.append(extracted["stats"])
+            text = "\n".join(parts)
+        else:
+            text = await _extract_fallback(page)
+
+        await context.close()
+        await browser.close()
+        return text.strip() or None
+    except Exception:
+        return None
+    finally:
+        await pw.stop()
