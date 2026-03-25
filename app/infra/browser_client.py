@@ -10,20 +10,11 @@ DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "browser"
 AUTH_DIR = DATA_DIR / "auth"
 
 DOMAIN_PROFILE: dict[str, str] = {
-    "bilibili.com": "bilibili",
-    "b23.tv": "bilibili",
     "xiaohongshu.com": "xiaohongshu",
     "xhslink.com": "xiaohongshu",
 }
 
-CONTENT_SELECTORS: dict[str, dict[str, str]] = {
-    "bilibili": {
-        "title": "h1.video-title, .video-title",
-        "desc": ".basic-desc-info, .desc-info-text",
-        "author": ".up-name",
-        "stats": ".video-data-list",
-    },
-}
+BILIBILI_DOMAINS = {"bilibili.com", "b23.tv"}
 
 URL_PATTERN = re.compile(r"https?://[^\s<>\"']+")
 
@@ -171,7 +162,12 @@ async def close_login_session(session: dict[str, Any]) -> None:
         pass
 
 
-def _match_profile(url: str) -> str | None:
+def _is_bilibili(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return any(host == d or host.endswith("." + d) for d in BILIBILI_DOMAINS)
+
+
+def _match_browser_profile(url: str) -> str | None:
     host = urlparse(url).hostname or ""
     for domain, profile in DOMAIN_PROFILE.items():
         if host == domain or host.endswith("." + domain):
@@ -182,37 +178,21 @@ def _match_profile(url: str) -> str | None:
 
 
 def extract_urls(text: str) -> list[str]:
-    return [u for u in URL_PATTERN.findall(text) if _match_profile(u)]
-
-
-async def _extract_with_selectors(page, profile: str) -> dict[str, str]:
-    selectors = CONTENT_SELECTORS.get(profile, {})
-    result: dict[str, str] = {}
-    for key, sel in selectors.items():
-        try:
-            locator = page.locator(sel).first
-            if await locator.is_visible():
-                result[key] = (await locator.inner_text()).strip()
-        except Exception:
-            continue
-    return result
-
-
-async def _extract_fallback(page) -> str:
-    title = await page.title() or ""
-    try:
-        meta = page.locator('meta[name="description"]').first
-        desc = await meta.get_attribute("content") or ""
-    except Exception:
-        desc = ""
-    parts = [p for p in [title, desc] if p]
-    return " | ".join(parts)
+    return [u for u in URL_PATTERN.findall(text) if _is_bilibili(u) or _match_browser_profile(u)]
 
 
 async def fetch_page_content(url: str) -> str | None:
+    if _is_bilibili(url):
+        from app.infra.bilibili_client import fetch_bilibili
+        return await fetch_bilibili(url)
+
+    return await _fetch_via_browser(url)
+
+
+async def _fetch_via_browser(url: str) -> str | None:
     from playwright.async_api import async_playwright
 
-    profile = _match_profile(url)
+    profile = _match_browser_profile(url)
     if not profile:
         return None
 
@@ -226,20 +206,14 @@ async def fetch_page_content(url: str) -> str | None:
         await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
         await asyncio.sleep(2)
 
-        extracted = await _extract_with_selectors(page, profile)
-        if extracted:
-            parts = []
-            if extracted.get("title"):
-                parts.append(extracted["title"])
-            if extracted.get("author"):
-                parts.append(f"UP主: {extracted['author']}")
-            if extracted.get("desc"):
-                parts.append(extracted["desc"])
-            if extracted.get("stats"):
-                parts.append(extracted["stats"])
-            text = "\n".join(parts)
-        else:
-            text = await _extract_fallback(page)
+        title = await page.title() or ""
+        try:
+            meta = page.locator('meta[name="description"]').first
+            desc = await meta.get_attribute("content") or ""
+        except Exception:
+            desc = ""
+        parts = [p for p in [title, desc] if p]
+        text = " | ".join(parts)
 
         await context.close()
         await browser.close()
