@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import queue as _queue
 import re
 import time
@@ -64,6 +65,8 @@ class DiscordBot:
         self._typing_sessions: dict[tuple[int, int], TypingSession] = {}
         self._session_engine = SessionEngine()
         self._last_message_ts: dict[tuple[int, int], float] = {}
+        self._last_msg_ts_path = BASE_DIR / "data" / "last_message_ts.json"
+        self._load_last_message_ts()
         self._typing_watchdog_task: asyncio.Task | None = None
         self._variable_timers: dict[int, tuple[asyncio.Task, float]] = {}  # (task, deadline)
         self._alarms: dict[int, list[asyncio.Task]] = {}  # per-channel, multiple allowed
@@ -512,7 +515,7 @@ class DiscordBot:
             since_last_msg = ""
             last_msg_ts = self._last_message_ts.get(key)
             if last_msg_ts is not None:
-                since_last_msg = f" since_last_msg={now - last_msg_ts:.2f}s"
+                since_last_msg = f" since_last_msg={time.time() - last_msg_ts:.2f}s"
             self._log_typing(
                 f"⌨️ typing_start user={user_label}{since_last_msg}"
             )
@@ -1460,6 +1463,23 @@ class DiscordBot:
         await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
         self._schedule_proactive(channel_id, channel)
 
+    def _load_last_message_ts(self) -> None:
+        """Load persisted last-message timestamps from disk."""
+        try:
+            if self._last_msg_ts_path.exists():
+                raw = _json.loads(self._last_msg_ts_path.read_text(encoding="utf-8"))
+                for key_str, ts in raw.items():
+                    ch_id_s, uid_s = key_str.split(":", 1)
+                    self._last_message_ts[(int(ch_id_s), int(uid_s))] = float(ts)
+        except Exception:  # noqa: BLE001
+            pass  # corrupted file — start fresh
+
+    def _save_last_message_ts(self) -> None:
+        """Persist last-message timestamps to disk."""
+        self._last_msg_ts_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {f"{ch_id}:{uid}": ts for (ch_id, uid), ts in self._last_message_ts.items()}
+        self._last_msg_ts_path.write_text(_json.dumps(data), encoding="utf-8")
+
     def _find_channel_for_user(self, user_id: int, guild: discord.Guild) -> discord.abc.Messageable | None:
         """Find the most recently active channel for a user based on message timestamps."""
         best_ch: int | None = None
@@ -1692,7 +1712,8 @@ class DiscordBot:
             except Exception:  # noqa: BLE001
                 pass
         key = self._typing_key(message.channel.id, message.author.id)
-        self._last_message_ts[key] = time.monotonic()
+        self._last_message_ts[key] = time.time()
+        self._save_last_message_ts()
 
         self._stop_typing_session(message.channel.id, message.author.id, reason="message")
         self._typing_nudge_channels.discard(message.channel.id)
