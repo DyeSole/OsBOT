@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
+from urllib.parse import urlparse
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "browser"
 AUTH_DIR = DATA_DIR / "auth"
@@ -18,6 +20,59 @@ def list_profiles() -> list[str]:
     """Return saved auth profile names (without .json suffix)."""
     _ensure_dirs()
     return sorted(p.stem for p in AUTH_DIR.glob("*.json"))
+
+
+def import_cookies(profile: str, cookies: list[dict], *, url: str = "") -> str:
+    """Import cookies exported from a browser into a Playwright storage state file.
+
+    *cookies* can be in either format:
+    - Netscape/EditThisCookie style: [{name, value, domain, path, ...}, ...]
+    - Playwright storage state:      {cookies: [...], origins: [...]}
+
+    If a full Playwright storage state dict is passed, it is saved as-is.
+    A *url* hint is only needed when cookie entries lack a ``domain`` field.
+    """
+    _ensure_dirs()
+    auth_path = AUTH_DIR / f"{profile}.json"
+
+    # Detect Playwright storage state format (dict with "cookies" key)
+    if isinstance(cookies, dict) and "cookies" in cookies:
+        auth_path.write_text(json.dumps(cookies, ensure_ascii=False, indent=2), encoding="utf-8")
+        return f"已导入 {profile} 登录态（Playwright 格式） -> {auth_path}"
+
+    # Convert simple cookie list to Playwright storage state
+    domain_hint = urlparse(url).hostname or "" if url else ""
+    pw_cookies = []
+    for c in cookies:
+        domain = c.get("domain", domain_hint)
+        secure = c.get("secure", False)
+        pw_cookies.append({
+            "name": c["name"],
+            "value": c["value"],
+            "domain": domain,
+            "path": c.get("path", "/"),
+            "expires": c.get("expirationDate", c.get("expires", -1)),
+            "httpOnly": c.get("httpOnly", False),
+            "secure": secure,
+            "sameSite": c.get("sameSite", "Lax"),
+        })
+
+    state = {"cookies": pw_cookies, "origins": []}
+    auth_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    return f"已导入 {profile} 登录态（{len(pw_cookies)} 条 cookie） -> {auth_path}"
+
+
+def import_cookies_from_file(profile: str, file_path: str) -> str:
+    """Import cookies from a JSON file on disk.
+
+    Accepts EditThisCookie export (list), Playwright storage state (dict),
+    or Netscape cookie export (list).
+    """
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"文件不存在: {file_path}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return import_cookies(profile, data)
 
 
 async def save_login(profile: str, url: str, *, timeout_ms: int = 120_000) -> str:
