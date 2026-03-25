@@ -355,7 +355,7 @@ class VisionClient:
             headers["anthropic-version"] = self.ANTHROPIC_VERSION
         return headers
 
-    def describe_image(self, image_bytes: bytes, media_type: str, *, system_prompt: str = "") -> str | None:
+    def describe_image(self, image_bytes: bytes, media_type: str, *, system_prompt: str = "", context: str = "") -> str | None:
         """Send an image to the vision model and return a text description.
 
         Returns None on any failure so callers can gracefully skip.
@@ -364,6 +364,7 @@ class VisionClient:
             return None
 
         b64 = base64.b64encode(image_bytes).decode("ascii")
+        user_text = f"{context}\n\n{self.DESCRIBE_PROMPT}".strip() if context else self.DESCRIBE_PROMPT
 
         try:
             if self._is_anthropic():
@@ -382,7 +383,7 @@ class VisionClient:
                                         "data": b64,
                                     },
                                 },
-                                {"type": "text", "text": self.DESCRIBE_PROMPT},
+                                {"type": "text", "text": user_text},
                             ],
                         }
                     ],
@@ -402,7 +403,7 @@ class VisionClient:
                                 "type": "image_url",
                                 "image_url": {"url": data_url},
                             },
-                            {"type": "text", "text": self.DESCRIBE_PROMPT},
+                            {"type": "text", "text": user_text},
                         ],
                     }
                 )
@@ -422,7 +423,7 @@ class VisionClient:
                 log.warning("vision api http %d: %s", resp.status_code, resp.text[:200])
                 if self.fallback:
                     log.info("vision falling back to main model")
-                    return self.fallback.describe_image(image_bytes, media_type, system_prompt=system_prompt)
+                    return self.fallback.describe_image(image_bytes, media_type, system_prompt=system_prompt, context=context)
                 return None
 
             data = resp.json()
@@ -440,12 +441,12 @@ class VisionClient:
 
             if result is None and self.fallback:
                 log.info("vision empty result, falling back to main model")
-                return self.fallback.describe_image(image_bytes, media_type, system_prompt=system_prompt)
+                return self.fallback.describe_image(image_bytes, media_type, system_prompt=system_prompt, context=context)
             return result
 
         except Exception:
             log.exception("vision describe_image failed")
             if self.fallback:
                 log.info("vision exception, falling back to main model")
-                return self.fallback.describe_image(image_bytes, media_type, system_prompt=system_prompt)
+                return self.fallback.describe_image(image_bytes, media_type, system_prompt=system_prompt, context=context)
             return None

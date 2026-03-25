@@ -1604,6 +1604,9 @@ class DiscordBot:
             return []
 
         vision_prompt = self.settings.vision_prompt
+        channel_id = message.channel.id
+        recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
+        context = self.history_store.render_entries(recent) if recent else ""
         status_msg = await message.channel.send("正在识图...")
         descriptions: list[str] = []
 
@@ -1616,7 +1619,7 @@ class DiscordBot:
                 image_bytes = await att.read()
                 import functools
                 desc = await asyncio.get_event_loop().run_in_executor(
-                    None, functools.partial(vision.describe_image, image_bytes, media_type, system_prompt=vision_prompt),
+                    None, functools.partial(vision.describe_image, image_bytes, media_type, system_prompt=vision_prompt, context=context),
                 )
                 if desc:
                     descriptions.append(f"[图片: {desc}]")
