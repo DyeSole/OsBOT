@@ -109,3 +109,47 @@ async def _fetch_comments(client: httpx.AsyncClient, aid: int, limit: int = 15) 
         return result
     except Exception:
         return []
+
+
+async def fetch_bilibili_comments(url: str, pages: int = 3) -> str | None:
+    host = (urlparse(url).hostname or "").lower()
+    if "b23.tv" in host:
+        url = await _resolve_short_url(url)
+
+    bvid = _extract_bvid(url)
+    if not bvid:
+        return None
+
+    async with httpx.AsyncClient(headers=_HEADERS, timeout=_TIMEOUT) as client:
+        resp = await client.get(_VIDEO_API, params={"bvid": bvid})
+        data = resp.json().get("data")
+        if not data:
+            return None
+
+        aid = data.get("aid")
+        if not aid:
+            return None
+
+        title = data.get("title", "")
+        all_comments: list[str] = []
+        for pn in range(1, pages + 1):
+            try:
+                resp = await client.get(_REPLY_API, params={"type": 1, "oid": aid, "sort": 1, "pn": pn, "ps": 20})
+                replies = resp.json().get("data", {}).get("replies") or []
+                if not replies:
+                    break
+                for r in replies:
+                    name = r.get("member", {}).get("uname", "")
+                    text = r.get("content", {}).get("message", "").replace("\n", " ")
+                    likes = r.get("like", 0)
+                    if name and text:
+                        all_comments.append(f"{name}: {text} ({_format_count(likes)}赞)")
+            except Exception:
+                break
+
+        if not all_comments:
+            return None
+
+        parts = [f"「{title}」的评论（共{len(all_comments)}条）:"]
+        parts.extend(all_comments)
+        return "\n".join(parts)

@@ -847,6 +847,10 @@ class DiscordBot:
                         await source_message.add_reaction(reaction)
                     except Exception as exc:  # noqa: BLE001
                         self.logger.error("API", f"failed to add reaction: {emoji}", exc=exc)
+            if tc.name == "read_comments":
+                url = str(tc.input.get("url", "")).strip()
+                if url:
+                    await self._execute_read_comments(url, channel_id, channel, prior_messages)
             if tc.name == "web_search":
                 query = tc.input.get("query", "")
                 if query:
@@ -854,6 +858,66 @@ class DiscordBot:
                         self.logger.info(f"🔍 search_depth_limit query={query} depth={search_depth}")
                     else:
                         await self._execute_search(query, channel_id, channel, prior_messages, search_depth=search_depth, edit_msg=edit_msg)
+
+    async def _execute_read_comments(
+        self,
+        url: str,
+        channel_id: int,
+        channel: discord.abc.Messageable,
+        prior_messages: list[dict[str, str]] | None = None,
+    ) -> None:
+        from app.infra.bilibili_client import fetch_bilibili_comments
+        from app.services.reply_service import load_system_prompt
+
+        self.logger.info(f"💬 read_comments url={url}")
+        try:
+            raw = await fetch_bilibili_comments(url)
+        except Exception as exc:
+            self.logger.error("BROWSER", f"read_comments failed: {url}", exc=exc)
+            return
+        if not raw:
+            return
+
+        summary_prompt = self.prompt_service.read_prompt("link_summary").strip()
+        if summary_prompt:
+            try:
+                raw = await asyncio.to_thread(
+                    self.compression_service.client.generate,
+                    messages=[{"role": "user", "content": raw}],
+                    system_prompt=summary_prompt,
+                )
+            except Exception:
+                pass
+
+        recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
+        recent_block = self.history_store.render_entries(recent) if recent else ""
+        comment_block = f"[评论区内容: {raw.strip()}]"
+        context_parts = [p for p in [recent_block, comment_block] if p]
+        messages = [{"role": "user", "content": "\n\n".join(context_parts)}]
+
+        try:
+            async with channel.typing():
+                response = await asyncio.to_thread(
+                    self.reply_service.generate_reply_with_tools, messages, include_tools=True,
+                )
+        except Exception as exc:
+            self.logger.error("UNKNOWN", "read_comments reply failed", exc=exc)
+            return
+
+        reply = (response.text or "").strip()
+        if reply:
+            try:
+                await channel.send(reply, allowed_mentions=AllowedMentions.none())
+                self.history_store.append_entry(
+                    channel_id=channel_id,
+                    role="assistant",
+                    username=self.settings.bot_key,
+                    time=self._now_clock(),
+                    content=reply,
+                )
+            except Exception as exc:
+                self.logger.error("UNKNOWN", "failed to send read_comments reply", exc=exc)
+        await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
 
     async def _execute_search(
         self,

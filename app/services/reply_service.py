@@ -69,6 +69,24 @@ REACTION_TOOL: dict[str, Any] = {
     },
 }
 
+READ_COMMENTS_TOOL: dict[str, Any] = {
+    "name": "read_comments",
+    "description": (
+        "读取链接的评论区。当用户分享了一个链接并且你想多看看评论、"
+        "或者用户让你看看评论区时使用。传入完整 URL。"
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "要读取评论的链接 URL。",
+            },
+        },
+        "required": ["url"],
+    },
+}
+
 TIMER_TOOLS: list[dict[str, Any]] = [
     {
         "name": "set_timer",
@@ -161,7 +179,7 @@ class ReplyService:
             return LLMResponse(text="哎，我字呢？")
 
         tools = TIMER_TOOLS if include_tools else ALARM_TOOLS
-        tools = tools + [REACTION_TOOL]
+        tools = tools + [REACTION_TOOL, READ_COMMENTS_TOOL]
         if include_search:
             tools = tools + [SEARCH_TOOL]
         return self.client.generate_with_tools(
@@ -183,6 +201,6 @@ class ReplyService:
         return self.client.stream_with_tools(
             messages=messages,
             system_prompt=load_system_prompt(),
-            tools=(TIMER_TOOLS if include_tools else ALARM_TOOLS) + [REACTION_TOOL, SEARCH_TOOL],
+            tools=(TIMER_TOOLS if include_tools else ALARM_TOOLS) + [REACTION_TOOL, READ_COMMENTS_TOOL, SEARCH_TOOL],
             on_text=on_text,
         )
