@@ -95,7 +95,7 @@ async def fetch_bilibili(url: str) -> str | None:
         return "\n".join(parts)
 
 
-async def _fetch_comments(client: httpx.AsyncClient, aid: int, limit: int = 5) -> list[str]:
+async def _fetch_comments(client: httpx.AsyncClient, aid: int, limit: int = 15) -> list[str]:
     try:
         resp = await client.get(_REPLY_API, params={"type": 1, "oid": aid, "sort": 1, "pn": 1, "ps": limit})
         replies = resp.json().get("data", {}).get("replies") or []

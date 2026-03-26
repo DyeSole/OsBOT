@@ -217,7 +217,7 @@ async def _extract_xhs(page) -> str:
     try:
         items = page.locator(".comment-item, .comment-inner, [class*='comment'] .content")
         count = await items.count()
-        for i in range(min(count, 3)):
+        for i in range(min(count, 10)):
             text = (await items.nth(i).inner_text()).strip()
             if text:
                 comments.append(f"  {text[:100]}")
