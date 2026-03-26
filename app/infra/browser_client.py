@@ -189,6 +189,50 @@ async def fetch_page_content(url: str) -> str | None:
     return await _fetch_via_browser(url)
 
 
+XHS_SELECTORS = {
+    "title": "#detail-title, .title, .note-title",
+    "author": ".username, .user-name, .author-name",
+    "content": "#detail-desc .note-text, .desc, .note-content, .content",
+    "likes": ".like-count, .interactions .count",
+}
+
+
+async def _extract_xhs(page) -> str:
+    parts: list[str] = []
+    for key, sel in XHS_SELECTORS.items():
+        try:
+            locator = page.locator(sel).first
+            if await locator.is_visible(timeout=2000):
+                text = (await locator.inner_text()).strip()
+                if text:
+                    if key == "title":
+                        parts.append(f"标题: {text}")
+                    elif key == "author":
+                        parts.append(f"作者: {text}")
+                    elif key == "content":
+                        parts.append(text[:500])
+                    elif key == "likes":
+                        parts.append(f"点赞: {text}")
+        except Exception:
+            continue
+
+    comments: list[str] = []
+    try:
+        items = page.locator(".comment-item, .comment-inner, [class*='comment'] .content")
+        count = await items.count()
+        for i in range(min(count, 3)):
+            text = (await items.nth(i).inner_text()).strip()
+            if text:
+                comments.append(f"  {text[:100]}")
+    except Exception:
+        pass
+    if comments:
+        parts.append("热门评论:")
+        parts.extend(comments)
+
+    return "\n".join(parts)
+
+
 async def _fetch_via_browser(url: str) -> str | None:
     from playwright.async_api import async_playwright
 
@@ -204,16 +248,18 @@ async def _fetch_via_browser(url: str) -> str | None:
         context = await browser.new_context(storage_state=str(auth_path))
         page = await context.new_page()
         await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
 
-        title = await page.title() or ""
-        try:
-            meta = page.locator('meta[name="description"]').first
-            desc = await meta.get_attribute("content") or ""
-        except Exception:
-            desc = ""
-        parts = [p for p in [title, desc] if p]
-        text = " | ".join(parts)
+        if profile == "xiaohongshu":
+            text = await _extract_xhs(page)
+        else:
+            title = await page.title() or ""
+            try:
+                meta = page.locator('meta[name="description"]').first
+                desc = await meta.get_attribute("content") or ""
+            except Exception:
+                desc = ""
+            text = " | ".join(p for p in [title, desc] if p)
 
         await context.close()
         await browser.close()
