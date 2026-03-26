@@ -994,10 +994,8 @@ class DiscordBot:
             intermediate = (search_response.text or "").strip()
             if intermediate and edit_msg:
                 try:
-                    existing = edit_msg.content or ""
-                    combined = f"{existing}\n{intermediate}" if existing else intermediate
-                    if len(combined) <= 2000:
-                        await edit_msg.edit(content=combined)
+                    if len(intermediate) <= 2000:
+                        await edit_msg.edit(content=intermediate)
                     else:
                         await self._reply_by_sentence(None, intermediate, channel=channel)
                 except Exception:  # noqa: BLE001
@@ -1013,10 +1011,8 @@ class DiscordBot:
         if reply:
             try:
                 if edit_msg:
-                    existing = edit_msg.content or ""
-                    combined = f"{existing}\n{reply}" if existing else reply
-                    if len(combined) <= 2000:
-                        await edit_msg.edit(content=combined)
+                    if len(reply) <= 2000:
+                        await edit_msg.edit(content=reply)
                     else:
                         await self._reply_by_sentence(None, reply, channel=channel)
                 else:
