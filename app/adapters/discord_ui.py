@@ -206,18 +206,10 @@ class CompressionConfigModal(discord.ui.Modal, title="压缩 API 配置"):
             required=True,
             max_length=4000,
         )
-        self.link_summary_prompt = discord.ui.TextInput(
-            label="链接总结提示词",
-            style=discord.TextStyle.paragraph,
-            default=bot.prompt_service.read_prompt("link_summary").strip()[:4000],
-            required=False,
-            max_length=4000,
-        )
         self.add_item(self.compression_base_url)
         self.add_item(self.compression_api_key)
         self.add_item(self.compression_model)
         self.add_item(self.compression_prompt)
-        self.add_item(self.link_summary_prompt)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         update_env_values(
@@ -231,11 +223,6 @@ class CompressionConfigModal(discord.ui.Modal, title="压缩 API 配置"):
             target="compression",
             content=self.compression_prompt.value,
         )
-        if self.link_summary_prompt.value.strip():
-            self.bot.prompt_service.write_prompt(
-                target="link_summary",
-                content=self.link_summary_prompt.value,
-            )
         await interaction.response.edit_message(
             content="API 配置\n\n压缩 API 配置和提示词已保存，文件监听会自动生效。",
             view=ApiToolboxView(self.bot),

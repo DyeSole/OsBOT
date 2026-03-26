@@ -16,6 +16,7 @@ class PendingReplySession:
     last_message_at: float
     use_long_timer: bool
     chunks: list[str]
+    extras: list[str] | None = None
     task: asyncio.Task | None = None
 
 

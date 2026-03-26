@@ -604,6 +604,7 @@ class DiscordBot:
         user_id: int,
         user_label: str,
         text: str,
+        extras: list[str] | None = None,
     ) -> None:
         now = time.monotonic()
         pending, opened = self._session_engine.touch_message(
@@ -615,6 +616,10 @@ class DiscordBot:
             now=now,
             now_clock=self._now_clock(),
         )
+        if extras:
+            if pending.extras is None:
+                pending.extras = []
+            pending.extras.extend(extras)
         if opened:
             pending.task = asyncio.create_task(self._dispatch_after_idle(channel_id, user_id))
 
@@ -645,11 +650,15 @@ class DiscordBot:
         if not merged_text:
             return
 
+        api_content = merged_text
+        if pending.extras:
+            api_content = api_content + "\n" + "\n".join(pending.extras)
+
         pending_entry = {
             "role": "user",
             "username": pending.user_label,
             "time": pending.first_time,
-            "content": merged_text,
+            "content": api_content,
         }
         transcript = await self._build_context_for_api(
             channel_id=channel_id,
@@ -715,16 +724,20 @@ class DiscordBot:
             except Exception:
                 await pending.channel.send("我刚刚有点卡住了，等我一下再试试。")
 
-    async def _reply_immediate(self, message: discord.Message, text: str) -> None:
+    async def _reply_immediate(self, message: discord.Message, text: str, extras: list[str] | None = None) -> None:
         channel_id = message.channel.id
         user_label = self._user_label(message.author)
         now_clock = self._now_clock()
+
+        api_content = text
+        if extras:
+            api_content = api_content + "\n" + "\n".join(extras)
 
         pending_entry = {
             "role": "user",
             "username": user_label,
             "time": now_clock,
-            "content": text,
+            "content": api_content,
         }
         transcript = await self._build_context_for_api(
             channel_id=channel_id,
@@ -877,17 +890,6 @@ class DiscordBot:
             return
         if not raw:
             return
-
-        summary_prompt = self.prompt_service.read_prompt("link_summary").strip()
-        if summary_prompt:
-            try:
-                raw = await asyncio.to_thread(
-                    self.compression_service.client.generate,
-                    messages=[{"role": "user", "content": raw}],
-                    system_prompt=summary_prompt,
-                )
-            except Exception:
-                pass
 
         recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
         recent_block = self.history_store.render_entries(recent) if recent else ""
@@ -1746,22 +1748,13 @@ class DiscordBot:
         if not urls:
             return []
 
-        summary_prompt = self.prompt_service.read_prompt("link_summary").strip()
         descriptions: list[str] = []
         for url in urls[:3]:
             try:
                 raw = await fetch_page_content(url)
                 if not raw:
                     continue
-                if summary_prompt:
-                    summary = await asyncio.to_thread(
-                        self.compression_service.client.generate,
-                        messages=[{"role": "user", "content": raw}],
-                        system_prompt=summary_prompt,
-                    )
-                    descriptions.append(f"[链接内容: {summary.strip()}]")
-                else:
-                    descriptions.append(f"[链接内容: {raw}]")
+                descriptions.append(f"[链接内容: {raw}]")
             except Exception:
                 self.logger.error("BROWSER", f"failed to fetch {url}")
         return descriptions
@@ -1781,8 +1774,6 @@ class DiscordBot:
             text = (text + "\n" if text else "") + "\n".join(image_descs)
 
         url_descs = await self._fetch_url_previews(text)
-        if url_descs:
-            text = text + "\n" + "\n".join(url_descs)
 
         if not text:
             return
@@ -1819,9 +1810,10 @@ class DiscordBot:
                 user_id=message.author.id,
                 user_label=self._user_label(message.author),
                 text=text,
+                extras=url_descs or None,
             )
         else:
-            asyncio.create_task(self._reply_immediate(message, text))
+            asyncio.create_task(self._reply_immediate(message, text, extras=url_descs or None))
 
     def run_forever(self) -> None:
         if not self.settings.discord_bot_token:
