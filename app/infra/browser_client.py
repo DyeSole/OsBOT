@@ -191,7 +191,6 @@ async def fetch_page_content(url: str) -> str | None:
 
 XHS_SELECTORS = {
     "title": "#detail-title, .title, .note-title",
-    "author": ".username, .user-name, .author-name",
     "content": "#detail-desc .note-text, .desc, .note-content, .content",
     "likes": ".like-count, .interactions .count",
 }
@@ -207,8 +206,6 @@ async def _extract_xhs(page) -> str:
                 if text:
                     if key == "title":
                         parts.append(f"标题: {text}")
-                    elif key == "author":
-                        parts.append(f"作者: {text}")
                     elif key == "content":
                         parts.append(text[:500])
                     elif key == "likes":

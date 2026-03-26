@@ -69,7 +69,6 @@ async def fetch_bilibili(url: str) -> str | None:
             return None
 
         title = data.get("title", "")
-        author = data.get("owner", {}).get("name", "")
         desc = (data.get("desc", "") or "").strip()
         duration = _format_duration(data.get("duration", 0))
         stat = data.get("stat", {})
@@ -81,7 +80,6 @@ async def fetch_bilibili(url: str) -> str | None:
 
         parts = [
             f"标题: {title}",
-            f"UP主: {author}",
             f"时长: {duration}",
             f"播放: {view} | 点赞: {like} | 投币: {coin} | 评论: {reply_count}",
         ]
