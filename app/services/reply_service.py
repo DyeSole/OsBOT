@@ -194,13 +194,17 @@ class ReplyService:
         on_text: Callable[[str], None],
         *,
         include_tools: bool = False,
+        include_search: bool = True,
     ) -> LLMResponse:
         if not messages:
             return LLMResponse(text="哎，我字呢？")
 
+        tools = (TIMER_TOOLS if include_tools else ALARM_TOOLS) + [REACTION_TOOL, READ_COMMENTS_TOOL]
+        if include_search:
+            tools = tools + [SEARCH_TOOL]
         return self.client.stream_with_tools(
             messages=messages,
             system_prompt=load_system_prompt(),
-            tools=(TIMER_TOOLS if include_tools else ALARM_TOOLS) + [REACTION_TOOL, READ_COMMENTS_TOOL, SEARCH_TOOL],
+            tools=tools,
             on_text=on_text,
         )

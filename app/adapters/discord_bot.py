@@ -416,6 +416,7 @@ class DiscordBot:
         messages: list[dict[str, str]],
         *,
         include_tools: bool = False,
+        include_search: bool = True,
     ) -> tuple[LLMResponse, list[discord.Message]]:
         from app.infra.llm_client import LLMResponse
 
@@ -426,6 +427,7 @@ class DiscordBot:
                 resp = self.reply_service.stream_reply_with_tools(
                     messages, lambda chunk: q.put(("text", chunk)),
                     include_tools=include_tools,
+                    include_search=include_search,
                 )
                 q.put(("done", resp))
             except Exception as exc:  # noqa: BLE001
