@@ -1682,12 +1682,22 @@ class DiscordBot:
         if not urls:
             return []
 
+        summary_prompt = self.prompt_service.read_prompt("link_summary").strip()
         descriptions: list[str] = []
         for url in urls[:3]:
             try:
-                content = await fetch_page_content(url)
-                if content:
-                    descriptions.append(f"[链接内容: {content}]")
+                raw = await fetch_page_content(url)
+                if not raw:
+                    continue
+                if summary_prompt:
+                    summary = await asyncio.to_thread(
+                        self.compression_service.client.generate,
+                        messages=[{"role": "user", "content": raw}],
+                        system_prompt=summary_prompt,
+                    )
+                    descriptions.append(f"[链接内容: {summary.strip()}]")
+                else:
+                    descriptions.append(f"[链接内容: {raw}]")
             except Exception:
                 self.logger.error("BROWSER", f"failed to fetch {url}")
         return descriptions
