@@ -47,17 +47,10 @@ class DispatchMixin:
         if target_channel is None:
             return
         for idx, sentence in enumerate(sentences):
-            if idx == 0 and anchor_message is not None:
-                await anchor_message.reply(
-                    sentence,
-                    mention_author=False,
-                    allowed_mentions=AllowedMentions.none(),
-                )
-            else:
-                await target_channel.send(
-                    sentence,
-                    allowed_mentions=AllowedMentions.none(),
-                )
+            await target_channel.send(
+                sentence,
+                allowed_mentions=AllowedMentions.none(),
+            )
             if idx < len(sentences) - 1:
                 await asyncio.sleep(0.8)
 
@@ -111,15 +104,9 @@ class DispatchMixin:
                         if display:
                             try:
                                 if novel_msg is None:
-                                    if anchor_message is not None:
-                                        novel_msg = await anchor_message.reply(
-                                            display, mention_author=False,
-                                            allowed_mentions=AllowedMentions.none(),
-                                        )
-                                    else:
-                                        novel_msg = await channel.send(
-                                            display, allowed_mentions=AllowedMentions.none(),
-                                        )
+                                    novel_msg = await channel.send(
+                                        display, allowed_mentions=AllowedMentions.none(),
+                                    )
                                     sent_msgs.append(novel_msg)
                                 elif len(display) <= 2000:
                                     await novel_msg.edit(content=display)
@@ -141,15 +128,9 @@ class DispatchMixin:
                             if not is_first and delay > 0:
                                 async with channel.typing():
                                     await asyncio.sleep(delay)
-                            if is_first and anchor_message is not None:
-                                msg = await anchor_message.reply(
-                                    s, mention_author=False,
-                                    allowed_mentions=AllowedMentions.none(),
-                                )
-                            else:
-                                msg = await channel.send(
-                                    s, allowed_mentions=AllowedMentions.none(),
-                                )
+                            msg = await channel.send(
+                                s, allowed_mentions=AllowedMentions.none(),
+                            )
                             sent_msgs.append(msg)
                             is_first = False
                         buffer = parts[-1]
@@ -159,15 +140,9 @@ class DispatchMixin:
                     if display:
                         try:
                             if novel_msg is None:
-                                if anchor_message is not None:
-                                    novel_msg = await anchor_message.reply(
-                                        display, mention_author=False,
-                                        allowed_mentions=AllowedMentions.none(),
-                                    )
-                                else:
-                                    novel_msg = await channel.send(
-                                        display, allowed_mentions=AllowedMentions.none(),
-                                    )
+                                novel_msg = await channel.send(
+                                    display, allowed_mentions=AllowedMentions.none(),
+                                )
                                 sent_msgs.append(novel_msg)
                             elif len(display) <= 2000:
                                 await novel_msg.edit(content=display)
@@ -178,15 +153,9 @@ class DispatchMixin:
                         if not is_first and self.settings.chat_reply_delay_seconds > 0:
                             async with channel.typing():
                                 await asyncio.sleep(self.settings.chat_reply_delay_seconds)
-                        if is_first and anchor_message is not None:
-                            msg = await anchor_message.reply(
-                                buffer.strip(), mention_author=False,
-                                allowed_mentions=AllowedMentions.none(),
-                            )
-                        else:
-                            msg = await channel.send(
-                                buffer.strip(), allowed_mentions=AllowedMentions.none(),
-                            )
+                        msg = await channel.send(
+                            buffer.strip(), allowed_mentions=AllowedMentions.none(),
+                        )
                         sent_msgs.append(msg)
                 return value, sent_msgs  # type: ignore[return-value]
             elif kind == "error":
@@ -271,13 +240,9 @@ class DispatchMixin:
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "failed to send reply", exc=exc)
             try:
-                await pending.anchor_message.reply(
-                    "我刚刚有点卡住了，等我一下再试试。",
-                    mention_author=False,
-                    allowed_mentions=AllowedMentions.none(),
-                )
-            except Exception:
                 await pending.channel.send("我刚刚有点卡住了，等我一下再试试。")
+            except Exception:
+                pass
 
     async def _reply_immediate(self, message: discord.Message, text: str) -> None:
         channel_id = message.channel.id
@@ -327,13 +292,9 @@ class DispatchMixin:
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "failed to send reply", exc=exc)
             try:
-                await message.reply(
-                    "我刚刚有点卡住了，等我一下再试试。",
-                    mention_author=False,
-                    allowed_mentions=AllowedMentions.none(),
-                )
-            except Exception:
                 await message.channel.send("我刚刚有点卡住了，等我一下再试试。")
+            except Exception:
+                pass
 
     # -- tool calls -----------------------------------------------------------
 
