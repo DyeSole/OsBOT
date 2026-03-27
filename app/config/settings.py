@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 ENV_PATH = BASE_DIR / ".env"
+CONFIG_PATH = BASE_DIR / "data" / "config.json"
 
 
 @dataclass
@@ -52,6 +54,8 @@ class Settings:
             self.jealousy_channel_ids = []
 
 
+# -- file I/O ----------------------------------------------------------------
+
 def _read_env_file(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.exists():
@@ -69,77 +73,101 @@ def _read_env_file(path: Path) -> dict[str, str]:
     return values
 
 
-def _env_value(name: str, env_file: dict[str, str], default: str = "") -> str:
-    if name in env_file:
-        return env_file[name]
+def _env_value(name: str, merged: dict[str, str], default: str = "") -> str:
+    if name in merged:
+        return merged[name]
     raw = os.getenv(name)
     if raw is not None:
         return raw
     return default
 
 
-def _env_bool(name: str, env_file: dict[str, str], default: bool) -> bool:
-    raw = _env_value(name, env_file)
+def _env_bool(name: str, merged: dict[str, str], default: bool) -> bool:
+    raw = _env_value(name, merged)
     if raw == "":
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# -- config.json persistence -------------------------------------------------
+
+def load_config() -> dict[str, str]:
+    if not CONFIG_PATH.exists():
+        return {}
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        return {k: str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_config(updates: dict[str, str]) -> None:
+    config = load_config()
+    config.update({k: v for k, v in updates.items() if k})
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+# -- load settings ------------------------------------------------------------
+
 def load_settings() -> Settings:
     env_file = _read_env_file(ENV_PATH)
-    if "TZ" in env_file:
-        os.environ["TZ"] = env_file["TZ"]
-    bot_key = _env_value("BOT_KEY", env_file, "Haze").strip() or "Haze"
-    mode = _env_value("APP_MODE", env_file, "normal").strip().lower() or "normal"
+    config = load_config()
+    merged = {**env_file, **config}  # config.json overlays .env
 
-    base_url = _env_value("BASE_URL", env_file, "").strip()
-    api_key = _env_value("API_KEY", env_file, "").strip()
-    model = _env_value("MODEL", env_file, "claude-4.6-opus").strip() or "claude-4.6-opus"
-    session_timeout_seconds = float(_env_value("SESSION_TIMEOUT_SECONDS", env_file, "15.0").strip() or "15.0")
+    if "TZ" in merged:
+        os.environ["TZ"] = merged["TZ"]
+    bot_key = _env_value("BOT_KEY", merged, "Haze").strip() or "Haze"
+    mode = _env_value("APP_MODE", merged, "normal").strip().lower() or "normal"
+
+    base_url = _env_value("BASE_URL", merged, "").strip()
+    api_key = _env_value("API_KEY", merged, "").strip()
+    model = _env_value("MODEL", merged, "claude-4.6-opus").strip() or "claude-4.6-opus"
+    session_timeout_seconds = float(_env_value("SESSION_TIMEOUT_SECONDS", merged, "15.0").strip() or "15.0")
     typing_detect_delay_seconds = float(
-        _env_value("TYPING_DETECT_DELAY_SECONDS", env_file, "1.0").strip() or "1.0"
+        _env_value("TYPING_DETECT_DELAY_SECONDS", merged, "1.0").strip() or "1.0"
     )
-    reset_timer_seconds = float(_env_value("RESET_TIMER_SECONDS", env_file, "3.0").strip() or "3.0")
-    proactive_idle_seconds = float(_env_value("PROACTIVE_IDLE_SECONDS", env_file, "300.0").strip() or "300.0")
-    typing_wait = _env_bool("TYPING_WAIT", env_file, True)
+    reset_timer_seconds = float(_env_value("RESET_TIMER_SECONDS", merged, "3.0").strip() or "3.0")
+    proactive_idle_seconds = float(_env_value("PROACTIVE_IDLE_SECONDS", merged, "300.0").strip() or "300.0")
+    typing_wait = _env_bool("TYPING_WAIT", merged, True)
     chat_reply_delay_seconds = float(
-        _env_value("CHAT_REPLY_DELAY_SECONDS", env_file, "0.8").strip() or "0.8"
+        _env_value("CHAT_REPLY_DELAY_SECONDS", merged, "0.8").strip() or "0.8"
     )
-    split_mode = _env_value("SPLIT_MODE", env_file, "chat").strip().lower() or "chat"
+    split_mode = _env_value("SPLIT_MODE", merged, "chat").strip().lower() or "chat"
     if split_mode not in ("chat", "novel"):
         split_mode = "chat"
-    typing_nudge_seconds = float(_env_value("TYPING_NUDGE_SECONDS", env_file, "60.0").strip() or "60.0")
-    watch_online_idle_seconds = float(_env_value("WATCH_ONLINE_IDLE_SECONDS", env_file, "600.0").strip() or "600.0")
-    quiet_enabled = _env_bool("QUIET_ENABLED", env_file, False)
-    quiet_start = _env_value("QUIET_START", env_file, "").strip()
-    quiet_end = _env_value("QUIET_END", env_file, "").strip()
-    raw_watch = _env_value("WATCH_USER_IDS", env_file, "").strip()
+    typing_nudge_seconds = float(_env_value("TYPING_NUDGE_SECONDS", merged, "60.0").strip() or "60.0")
+    watch_online_idle_seconds = float(_env_value("WATCH_ONLINE_IDLE_SECONDS", merged, "600.0").strip() or "600.0")
+    quiet_enabled = _env_bool("QUIET_ENABLED", merged, False)
+    quiet_start = _env_value("QUIET_START", merged, "").strip()
+    quiet_end = _env_value("QUIET_END", merged, "").strip()
+    raw_watch = _env_value("WATCH_USER_IDS", merged, "").strip()
     watch_user_ids = [uid.strip() for uid in raw_watch.split(",") if uid.strip()] if raw_watch else []
-    raw_jealousy = _env_value("JEALOUSY_CHANNEL_IDS", env_file, "").strip()
+    raw_jealousy = _env_value("JEALOUSY_CHANNEL_IDS", merged, "").strip()
     jealousy_channel_ids = [cid.strip() for cid in raw_jealousy.split(",") if cid.strip()] if raw_jealousy else []
 
-    context_entries = int(_env_value("CONTEXT_ENTRIES", env_file, "20").strip() or "20")
-    transcript_max_tokens = int(_env_value("TRANSCRIPT_MAX_TOKENS", env_file, "20000").strip() or "20000")
+    context_entries = int(_env_value("CONTEXT_ENTRIES", merged, "20").strip() or "20")
+    transcript_max_tokens = int(_env_value("TRANSCRIPT_MAX_TOKENS", merged, "20000").strip() or "20000")
 
-    search_base_url = _env_value("SEARCH_BASE_URL", env_file, "").strip()
-    search_api_key = _env_value("SEARCH_API_KEY", env_file, "").strip()
-    search_model = _env_value("SEARCH_MODEL", env_file, "").strip()
+    search_base_url = _env_value("SEARCH_BASE_URL", merged, "").strip()
+    search_api_key = _env_value("SEARCH_API_KEY", merged, "").strip()
+    search_model = _env_value("SEARCH_MODEL", merged, "").strip()
 
-    vision_base_url = _env_value("VISION_BASE_URL", env_file, "").strip()
-    vision_api_key = _env_value("VISION_API_KEY", env_file, "").strip()
-    vision_model = _env_value("VISION_MODEL", env_file, "").strip()
-    vision_prompt = _env_value("VISION_PROMPT", env_file, "").strip()
+    vision_base_url = _env_value("VISION_BASE_URL", merged, "").strip()
+    vision_api_key = _env_value("VISION_API_KEY", merged, "").strip()
+    vision_model = _env_value("VISION_MODEL", merged, "").strip()
+    vision_prompt = _env_value("VISION_PROMPT", merged, "").strip()
 
     return Settings(
         bot_key=bot_key,
-        discord_bot_token=_env_value("DISCORD_BOT_TOKEN", env_file, "").strip(),
+        discord_bot_token=_env_value("DISCORD_BOT_TOKEN", merged, "").strip(),
         app_mode="debug" if mode == "debug" else "normal",
         base_url=base_url,
         api_key=api_key,
         model=model,
-        show_error_detail=_env_bool("SHOW_ERROR_DETAIL", env_file, False),
-        show_api_payload=_env_bool("SHOW_API_PAYLOAD", env_file, False),
-        show_interaction_logs=_env_bool("SHOW_INTERACTION_LOGS", env_file, True),
+        show_error_detail=_env_bool("SHOW_ERROR_DETAIL", merged, False),
+        show_api_payload=_env_bool("SHOW_API_PAYLOAD", merged, False),
+        show_interaction_logs=_env_bool("SHOW_INTERACTION_LOGS", merged, True),
         session_timeout_seconds=max(1.0, session_timeout_seconds),
         typing_detect_delay_seconds=max(0.0, typing_detect_delay_seconds),
         reset_timer_seconds=max(0.1, reset_timer_seconds),
@@ -207,34 +235,3 @@ def summarize_settings(settings: Settings) -> dict[str, Any]:
         "VISION_MODEL": settings.vision_model,
         "VISION_API_KEY_SET": bool(settings.vision_api_key),
     }
-
-
-def read_env_values() -> dict[str, str]:
-    return _read_env_file(ENV_PATH)
-
-
-def update_env_values(updates: dict[str, str]) -> None:
-    existing_lines: list[str] = []
-    if ENV_PATH.exists():
-        existing_lines = ENV_PATH.read_text(encoding="utf-8").splitlines()
-
-    pending = {key: value for key, value in updates.items() if key}
-    result_lines: list[str] = []
-
-    for raw_line in existing_lines:
-        stripped = raw_line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in raw_line:
-            result_lines.append(raw_line)
-            continue
-
-        key, _value = raw_line.split("=", 1)
-        env_key = key.strip()
-        if env_key in pending:
-            result_lines.append(f"{env_key}={pending.pop(env_key)}")
-        else:
-            result_lines.append(raw_line)
-
-    for key, value in pending.items():
-        result_lines.append(f"{key}={value}")
-
-    ENV_PATH.write_text("\n".join(result_lines).rstrip() + "\n", encoding="utf-8")
