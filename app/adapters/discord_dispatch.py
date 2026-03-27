@@ -390,6 +390,7 @@ class DispatchMixin:
                 api_key=settings.tts_api_key,
                 voice_id=settings.tts_voice_id,
                 speed=settings.tts_speed,
+                pitch=settings.tts_pitch,
                 emotion=settings.tts_emotion,
             )
         except Exception as exc:  # noqa: BLE001

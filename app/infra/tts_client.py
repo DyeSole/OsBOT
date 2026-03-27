@@ -18,6 +18,7 @@ def synthesize(
     api_key: str,
     voice_id: str,
     speed: float = 1.0,
+    pitch: int = 0,
     emotion: str = "",
 ) -> bytes | None:
     """Synthesize *text* to mp3 bytes. Returns None on failure."""
@@ -28,7 +29,7 @@ def synthesize(
         "voice_id": voice_id,
         "speed": max(0.5, min(2.0, speed)),
         "vol": 1.0,
-        "pitch": 0,
+        "pitch": max(-12, min(12, pitch)),
     }
     if emotion:
         voice_setting["emotion"] = emotion

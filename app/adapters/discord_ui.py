@@ -125,6 +125,7 @@ TTS_FIELDS = [
     FieldDef("TTS_API_KEY", "TTS_API_KEY", required=False, placeholder="MiniMax API Key"),
     FieldDef("TTS_VOICE_ID", "TTS_VOICE_ID", required=False, placeholder="克隆音色 ID"),
     FieldDef("TTS_SPEED", "语速（0.5~2.0，默认 1.0）", required=False, max_length=5, placeholder="1.0"),
+    FieldDef("TTS_PITCH", "音调（-12~12，默认 0）", required=False, max_length=4, placeholder="0"),
     FieldDef("TTS_EMOTION", "情绪（happy/sad/angry/neutral 等）", required=False, max_length=20, placeholder="留空则不设"),
 ]
 

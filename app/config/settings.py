@@ -52,6 +52,7 @@ class Settings:
     tts_api_key: str = ""
     tts_voice_id: str = ""
     tts_speed: float = 1.0
+    tts_pitch: int = 0
     tts_emotion: str = ""
 
     def __post_init__(self) -> None:
@@ -172,6 +173,7 @@ def load_settings() -> Settings:
     tts_api_key = _env_value("TTS_API_KEY", merged, "").strip()
     tts_voice_id = _env_value("TTS_VOICE_ID", merged, "").strip()
     tts_speed = float(_env_value("TTS_SPEED", merged, "1.0").strip() or "1.0")
+    tts_pitch = int(_env_value("TTS_PITCH", merged, "0").strip() or "0")
     tts_emotion = _env_value("TTS_EMOTION", merged, "").strip()
 
     return Settings(
@@ -213,6 +215,7 @@ def load_settings() -> Settings:
         tts_api_key=tts_api_key,
         tts_voice_id=tts_voice_id,
         tts_speed=max(0.5, min(2.0, tts_speed)),
+        tts_pitch=max(-12, min(12, tts_pitch)),
         tts_emotion=tts_emotion,
     )
 
