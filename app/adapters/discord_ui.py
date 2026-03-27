@@ -10,26 +10,6 @@ if TYPE_CHECKING:
     from app.adapters.discord_bot import DiscordBot
 
 
-class BrowserLoginModal(discord.ui.Modal, title="浏览器登录"):
-    def __init__(self, bot: DiscordBot):
-        super().__init__()
-        self.bot = bot
-        self.app = discord.ui.TextInput(
-            label="应用名称",
-            default="bilibili",
-            required=True,
-            max_length=80,
-            placeholder="如 bilibili、xiaohongshu",
-        )
-        self.add_item(self.app)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        await self.bot.handle_browser_login(
-            interaction,
-            app=self.app.value.strip(),
-        )
-
-
 class ApiConfigModal(discord.ui.Modal, title="聊天 API 配置"):
     def __init__(self, bot: DiscordBot):
         super().__init__()
@@ -527,30 +507,6 @@ class ProactiveToolboxView(discord.ui.View):
         )
 
 
-class SocialToolboxView(discord.ui.View):
-    def __init__(self, bot: DiscordBot):
-        super().__init__(timeout=300)
-        self.bot = bot
-
-    @discord.ui.button(label="浏览器登录", style=discord.ButtonStyle.primary)
-    async def browser_login(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(BrowserLoginModal(self.bot))
-
-    @discord.ui.button(label="登录态列表", style=discord.ButtonStyle.primary)
-    async def browser_profiles(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.edit_message(
-            content=self.bot.browser_profiles_text(),
-            view=SocialToolboxView(self.bot),
-        )
-
-    @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
-    async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.edit_message(
-            content="工具箱",
-            view=ToolboxView(self.bot),
-        )
-
-
 class ContextEntriesModal(discord.ui.Modal, title="上下文条数"):
     def __init__(self, bot: DiscordBot):
         super().__init__()
@@ -669,9 +625,3 @@ class ToolboxView(discord.ui.View):
             view=PromptToolboxView(self.bot),
         )
 
-    @discord.ui.button(label="社交平台", style=discord.ButtonStyle.secondary)
-    async def social(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.edit_message(
-            content="社交平台",
-            view=SocialToolboxView(self.bot),
-        )

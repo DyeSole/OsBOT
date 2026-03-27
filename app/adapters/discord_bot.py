@@ -24,16 +24,6 @@ from app.services.reply_service import ReplyService
 from app.adapters.discord_ui import ToolboxView
 
 
-LOGIN_TARGETS: dict[str, tuple[str, str]] = {
-    "bilibili": ("bilibili", "https://passport.bilibili.com/login"),
-    "b站": ("bilibili", "https://passport.bilibili.com/login"),
-    "哔哩哔哩": ("bilibili", "https://passport.bilibili.com/login"),
-    "xiaohongshu": ("xiaohongshu", "https://www.xiaohongshu.com"),
-    "小红书": ("xiaohongshu", "https://www.xiaohongshu.com"),
-    "rednote": ("xiaohongshu", "https://www.xiaohongshu.com"),
-}
-
-
 @dataclass
 class TypingSession:
     started_at: float
@@ -168,65 +158,6 @@ class DiscordBot:
                 ephemeral=True,
             )
 
-    async def handle_browser_login(self, interaction: discord.Interaction, *, app: str) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            import io
-            from app.infra.browser_client import (
-                close_login_session,
-                finish_login_session,
-                start_login_session,
-            )
-
-            profile, url, source = await self._resolve_login_target(app)
-            session = await start_login_session(profile, url)
-            file = discord.File(
-                io.BytesIO(session["preview"]),
-                filename=f"{profile}-login-preview.png",
-            )
-            initial_text = "\n".join(
-                [
-                    "浏览器登录",
-                    "",
-                    f"应用: {app}",
-                    f"登录页: {url}",
-                    f"来源: {source}",
-                    "截图已返回，请在 120 秒内完成扫码/登录。",
-                    "我会每 5 秒检查一次，成功后立即保存登录态。",
-                ]
-            )
-            await interaction.edit_original_response(
-                content=initial_text,
-                attachments=[file],
-            )
-            try:
-                msg = await finish_login_session(
-                    session,
-                    profile,
-                    login_url=url,
-                    timeout_ms=120_000,
-                    poll_interval_ms=5_000,
-                )
-            finally:
-                await close_login_session(session)
-            await interaction.edit_original_response(
-                content=f"{initial_text}\n\n结果: {msg}",
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.logger.error("BROWSER", "login save failed", exc=exc)
-            await interaction.edit_original_response(
-                content=f"浏览器登录\n\n保存登录态失败: {exc}",
-            )
-
-    @staticmethod
-    def browser_profiles_text() -> str:
-        from app.infra.browser_client import list_profiles
-
-        profiles = list_profiles()
-        if profiles:
-            return "社交平台\n\n已保存的登录态:\n" + "\n".join(f"  • {p}" for p in profiles)
-        return "社交平台\n\n还没有保存任何登录态。"
-
     def apply_settings(self, settings: Settings) -> None:
         old_token = self.settings.discord_bot_token
         self.settings = settings
@@ -246,47 +177,6 @@ class DiscordBot:
                 "CONFIG",
                 "DISCORD_BOT_TOKEN changed in .env but live token swap is not supported; restart required.",
             )
-
-    @staticmethod
-    def _slugify_profile(value: str) -> str:
-        profile = re.sub(r"[^\w.-]+", "_", value.strip().lower(), flags=re.UNICODE).strip("._")
-        return profile or "browser"
-
-    @staticmethod
-    def _pick_login_url(results: list[dict[str, str]]) -> str:
-        for item in results:
-            href = str(item.get("href", "")).strip()
-            if href.startswith(("http://", "https://")):
-                return href
-        return ""
-
-    async def _resolve_login_target(self, app: str) -> tuple[str, str, str]:
-        app_name = app.strip()
-        if not app_name:
-            raise ValueError("应用名称不能为空")
-
-        preset = LOGIN_TARGETS.get(app_name.lower())
-        if preset is None:
-            preset = LOGIN_TARGETS.get(app_name)
-        if preset is not None:
-            profile, url = preset
-            return profile, url, "preset"
-
-        from app.infra.search_client import web_search
-
-        query = f"{app_name} 官方登录页"
-        results = await asyncio.to_thread(
-            web_search,
-            query,
-            max_results=5,
-            base_url=self.settings.search_base_url,
-            api_key=self.settings.search_api_key,
-            model=self.settings.search_model,
-        )
-        url = self._pick_login_url(results)
-        if not url:
-            raise RuntimeError(f"未找到 {app_name} 的登录页，请后续补充预设站点。")
-        return self._slugify_profile(app_name), url, "search"
 
     async def reload_settings_if_needed(self) -> bool:
         current_mtime = env_last_modified()
