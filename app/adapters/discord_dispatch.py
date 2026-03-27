@@ -356,6 +356,10 @@ class DispatchMixin:
                         await source_message.add_reaction(reaction)
                     except Exception as exc:  # noqa: BLE001
                         self.logger.error("API", f"failed to add reaction: {emoji}", exc=exc)
+            if tc.name == "send_voice":
+                voice_text = str(tc.input.get("text", "")).strip()
+                if voice_text:
+                    await self._send_voice(voice_text, channel_id, channel)
             if tc.name == "web_search":
                 query = tc.input.get("query", "")
                 if query:
@@ -363,6 +367,46 @@ class DispatchMixin:
                         self.logger.info(f"🔍 search_depth_limit query={query} depth={search_depth}")
                     else:
                         await self._execute_search(query, channel_id, channel, prior_messages, search_depth=search_depth, edit_msg=edit_msg)
+
+    # -- voice ----------------------------------------------------------------
+
+    async def _send_voice(
+        self,
+        text: str,
+        channel_id: int,
+        channel: discord.abc.Messageable,
+    ) -> None:
+        from app.infra.tts_client import synthesize
+
+        settings = self.settings
+        if not settings.tts_api_key or not settings.tts_voice_id:
+            self.logger.info("🔇 tts skipped: no api_key or voice_id")
+            return
+
+        try:
+            audio_bytes = await asyncio.to_thread(
+                synthesize,
+                text,
+                api_key=settings.tts_api_key,
+                voice_id=settings.tts_voice_id,
+                speed=settings.tts_speed,
+                emotion=settings.tts_emotion,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("UNKNOWN", "tts synthesize failed", exc=exc)
+            return
+
+        if not audio_bytes:
+            self.logger.info("🔇 tts returned empty audio")
+            return
+
+        import io
+        file = discord.File(io.BytesIO(audio_bytes), filename="voice.mp3")
+        try:
+            await channel.send(file=file)
+            self._save_bot_reply(channel_id, f"[语音: {text}]")
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("UNKNOWN", "failed to send voice message", exc=exc)
 
     # -- search ---------------------------------------------------------------
 

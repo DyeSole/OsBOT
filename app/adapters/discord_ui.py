@@ -121,6 +121,13 @@ COMPRESSION_API_FIELDS = [
     FieldDef("COMPRESSION_MODEL", "COMPRESSION_MODEL", required=False, max_length=120, placeholder="留空则使用聊天 API"),
 ]
 
+TTS_FIELDS = [
+    FieldDef("TTS_API_KEY", "TTS_API_KEY", required=False, placeholder="MiniMax API Key"),
+    FieldDef("TTS_VOICE_ID", "TTS_VOICE_ID", required=False, placeholder="克隆音色 ID"),
+    FieldDef("TTS_SPEED", "语速（0.5~2.0，默认 1.0）", required=False, max_length=5, placeholder="1.0"),
+    FieldDef("TTS_EMOTION", "情绪（happy/sad/angry/neutral 等）", required=False, max_length=20, placeholder="留空则不设"),
+]
+
 QUIET_HOURS_FIELDS = [
     FieldDef("QUIET_ENABLED", "开关（1=开启 0=关闭）", max_length=1),
     FieldDef("QUIET_START", "开始时间（如 23:00）", max_length=5),
@@ -344,6 +351,13 @@ class ApiToolboxView(BotView):
         await interaction.response.send_modal(ConfigModal(
             self.bot, fields=COMPRESSION_API_FIELDS, title="压缩 API 配置",
             confirm="API 配置\n\n压缩 API 配置已保存，立即生效。", return_view=ApiToolboxView,
+        ))
+
+    @discord.ui.button(label="语音 TTS", style=discord.ButtonStyle.primary)
+    async def tts_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(ConfigModal(
+            self.bot, fields=TTS_FIELDS, title="语音 TTS 配置",
+            confirm="API 配置\n\n语音 TTS 配置已保存，立即生效。", return_view=ApiToolboxView,
         ))
 
     @discord.ui.button(label="压缩提示词", style=discord.ButtonStyle.secondary)

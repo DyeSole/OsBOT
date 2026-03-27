@@ -69,6 +69,25 @@ REACTION_TOOL: dict[str, Any] = {
     },
 }
 
+VOICE_TOOL: dict[str, Any] = {
+    "name": "send_voice",
+    "description": (
+        "将文字转为语音消息发送给用户。"
+        "当用户要求你发语音、用语音说话、或场景适合语音时使用。"
+        "text 填你想说的话，不要太长，控制在几句话以内。"
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": "要转为语音的文字内容。",
+            },
+        },
+        "required": ["text"],
+    },
+}
+
 TIMER_TOOLS: list[dict[str, Any]] = [
     {
         "name": "set_timer",
@@ -135,6 +154,7 @@ class ReplyService:
             )
         else:
             self.vision_client = main_vision
+        self._tts_available = bool(settings.tts_api_key and settings.tts_voice_id)
 
     def generate_reply(self, messages: list[dict[str, str]]) -> str:
         if not messages:
@@ -154,6 +174,8 @@ class ReplyService:
 
         tools = TIMER_TOOLS if include_tools else ALARM_TOOLS
         tools = tools + [REACTION_TOOL]
+        if self._tts_available:
+            tools = tools + [VOICE_TOOL]
         if include_search:
             tools = tools + [SEARCH_TOOL]
         return self.client.generate_with_tools(
@@ -175,6 +197,9 @@ class ReplyService:
         return self.client.stream_with_tools(
             messages=messages,
             system_prompt=load_system_prompt(),
-            tools=(TIMER_TOOLS if include_tools else ALARM_TOOLS) + [REACTION_TOOL, SEARCH_TOOL],
+            tools=(TIMER_TOOLS if include_tools else ALARM_TOOLS)
+                + [REACTION_TOOL]
+                + ([VOICE_TOOL] if self._tts_available else [])
+                + [SEARCH_TOOL],
             on_text=on_text,
         )

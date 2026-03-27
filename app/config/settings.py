@@ -49,6 +49,10 @@ class Settings:
     compression_base_url: str = ""
     compression_api_key: str = ""
     compression_model: str = ""
+    tts_api_key: str = ""
+    tts_voice_id: str = ""
+    tts_speed: float = 1.0
+    tts_emotion: str = ""
 
     def __post_init__(self) -> None:
         if self.watch_user_ids is None:
@@ -165,6 +169,11 @@ def load_settings() -> Settings:
     compression_api_key = _env_value("COMPRESSION_API_KEY", merged, "").strip()
     compression_model = _env_value("COMPRESSION_MODEL", merged, "").strip()
 
+    tts_api_key = _env_value("TTS_API_KEY", merged, "").strip()
+    tts_voice_id = _env_value("TTS_VOICE_ID", merged, "").strip()
+    tts_speed = float(_env_value("TTS_SPEED", merged, "1.0").strip() or "1.0")
+    tts_emotion = _env_value("TTS_EMOTION", merged, "").strip()
+
     return Settings(
         bot_key=bot_key,
         discord_bot_token=_env_value("DISCORD_BOT_TOKEN", merged, "").strip(),
@@ -201,6 +210,10 @@ def load_settings() -> Settings:
         compression_base_url=compression_base_url,
         compression_api_key=compression_api_key,
         compression_model=compression_model,
+        tts_api_key=tts_api_key,
+        tts_voice_id=tts_voice_id,
+        tts_speed=max(0.5, min(2.0, tts_speed)),
+        tts_emotion=tts_emotion,
     )
 
 
