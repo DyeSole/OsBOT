@@ -6,7 +6,7 @@ import time
 from app.core.clock import now_clock as _now_clock_util
 
 import discord
-from discord import AllowedMentions, app_commands
+from discord import app_commands
 
 from app.config.settings import BASE_DIR, Settings, env_last_modified, load_settings
 from app.core.logging import BotLogger

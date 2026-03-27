@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from app.core.clock import now_clock as _now_clock_util
 from pathlib import Path
 from typing import Any
