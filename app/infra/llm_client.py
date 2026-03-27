@@ -37,7 +37,6 @@ class LLMClient:
         self.api_key = api_key
         self.model = model
         self.show_api_payload = show_api_payload
-        self.debug_context_meta: dict[str, Any] = {}
 
     def _is_anthropic_messages_api(self) -> bool:
         return self.base_url.endswith("/messages")
@@ -58,93 +57,6 @@ class LLMClient:
         if self._is_anthropic_messages_api():
             headers["anthropic-version"] = self.ANTHROPIC_VERSION
         return headers
-
-    def _can_count_tokens(self) -> bool:
-        return "claude" in self.model.lower()
-
-    def _count_tokens_candidates(self) -> list[str]:
-        base = self.base_url.rstrip("/")
-        candidates: list[str] = []
-        if self._is_anthropic_messages_api():
-            candidates.append(f"{base}/count_tokens")
-        else:
-            if base.endswith("/chat/completions"):
-                prefix = base[: -len("/chat/completions")]
-                candidates.extend(
-                    [
-                        f"{prefix}/messages/count_tokens",
-                        f"{prefix}/count_tokens",
-                    ]
-                )
-            else:
-                candidates.extend(
-                    [
-                        f"{base}/messages/count_tokens",
-                        f"{base}/count_tokens",
-                    ]
-                )
-        seen: set[str] = set()
-        out: list[str] = []
-        for item in candidates:
-            if item not in seen:
-                seen.add(item)
-                out.append(item)
-        return out
-
-    def _count_tokens(self, payload: dict[str, Any]) -> tuple[int | None, dict[str, Any]]:
-        if not self._can_count_tokens():
-            return None, {"source": "anthropic_count_tokens_skipped", "reason": "model_not_claude"}
-
-        count_payload: dict[str, Any] = {
-            "model": payload.get("model", self.model),
-            "messages": payload.get("messages", []),
-        }
-        if payload.get("system"):
-            count_payload["system"] = payload["system"]
-        if payload.get("tools"):
-            count_payload["tools"] = payload["tools"]
-
-        last_meta: dict[str, Any] = {
-            "source": "anthropic_count_tokens_unavailable",
-            "tried_urls": self._count_tokens_candidates(),
-        }
-        for url in self._count_tokens_candidates():
-            try:
-                resp = requests.post(
-                    url,
-                    headers=self._headers(),
-                    json=count_payload,
-                    timeout=30,
-                )
-                if resp.status_code >= 400:
-                    last_meta = {
-                        "source": "anthropic_count_tokens_unavailable",
-                        "url": url,
-                        "status_code": resp.status_code,
-                        "body_snippet": resp.text[:200].replace("\n", " "),
-                    }
-                    continue
-                data = resp.json()
-                tokens = data.get("input_tokens")
-                if isinstance(tokens, int) and tokens >= 0:
-                    return tokens, {
-                        "source": "anthropic_count_tokens",
-                        "url": url,
-                    }
-                last_meta = {
-                    "source": "anthropic_count_tokens_unavailable",
-                    "url": url,
-                    "reason": "missing_input_tokens",
-                    "body_snippet": json.dumps(data, ensure_ascii=False)[:200],
-                }
-            except Exception as exc:
-                last_meta = {
-                    "source": "anthropic_count_tokens_unavailable",
-                    "url": url,
-                    "reason": exc.__class__.__name__,
-                    "detail": str(exc)[:200],
-                }
-        return None, last_meta
 
     def _dump_payload_debug(
         self,
@@ -179,19 +91,10 @@ class LLMClient:
             history_parts.append(f"[{role}]\n{text}")
 
         tools_text = json.dumps(tools or [], ensure_ascii=False, indent=2) if tools else ""
-        total_estimated_tokens, total_meta = self._count_tokens(payload)
 
         parts = [
             "=======请求时间=======",
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "=======实时聊天记录预测Token=======",
-            json.dumps(self.debug_context_meta, ensure_ascii=False, indent=2) if self.debug_context_meta else "（无）",
-            "=======总预测Token=======",
-            json.dumps(
-                {"estimated_tokens": total_estimated_tokens, **total_meta},
-                ensure_ascii=False,
-                indent=2,
-            ),
             "=======系统提示词=======",
             system_prompt or "（空）",
             "=======历史记录=======",
@@ -205,7 +108,6 @@ class LLMClient:
         with self.DEBUG_PAYLOAD_PATH.open("w", encoding="utf-8") as f:
             f.write("\n".join(parts))
             f.write("\n")
-        self.debug_context_meta = {}
 
     def _payload(
         self,

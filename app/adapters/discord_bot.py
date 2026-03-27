@@ -202,10 +202,6 @@ class DiscordBot:
                 f"🧮 transcript_tokens ch={channel_id} est_tokens={estimated_tokens} "
                 f"limit={self.settings.transcript_max_tokens}"
             )
-        self.reply_service.set_debug_context_meta(
-            estimated_tokens=estimated_tokens,
-            limit=self.settings.transcript_max_tokens,
-        )
         transcript = self.context_builder.build_context_for_api(
             channel_id=channel_id,
             pending_messages=pending_messages,

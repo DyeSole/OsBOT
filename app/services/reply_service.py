@@ -136,11 +136,6 @@ class ReplyService:
         else:
             self.vision_client = main_vision
 
-    def set_debug_context_meta(self, *, estimated_tokens: int, limit: int) -> None:
-        self.client.debug_context_meta = {
-            "estimated_tokens": estimated_tokens,
-            "limit": limit,
-        }
 
     def generate_reply(self, messages: list[dict[str, str]]) -> str:
         if not messages:
