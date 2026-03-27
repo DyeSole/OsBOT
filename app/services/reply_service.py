@@ -73,19 +73,6 @@ SEARCH_BILIBILI_TOOL: dict[str, Any] = {
 }
 
 
-SEARCH_XHS_TOOL: dict[str, Any] = {
-    "name": "search_xiaohongshu",
-    "description": "小红书搜帖子，返标题/点赞数/链接。搜完必须发链接。最多连续5次翻页。",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "keyword": {"type": "string", "description": "关键词"},
-            "count": {"type": "integer", "minimum": 0, "maximum": 10},
-            "offset": {"type": "integer", "minimum": 0},
-        },
-        "required": ["keyword", "count"],
-    },
-}
 
 
 
@@ -192,11 +179,7 @@ class ReplyService:
         if not messages:
             return LLMResponse(text="哎，我字呢？")
 
-        tools = TIMER_TOOLS if include_tools else ALARM_TOOLS
-        tools = tools + [REACTION_TOOL, READ_COMMENTS_TOOL, SEARCH_BILIBILI_TOOL, SEARCH_XHS_TOOL]
-        if include_search:
-            tools = tools + [SEARCH_TOOL]
-        tools = tools + [_build_speak_tool()]
+        tools: list = []
         return self.client.generate_with_tools(
             messages=messages,
             system_prompt=load_system_prompt(),
@@ -214,10 +197,7 @@ class ReplyService:
         if not messages:
             return LLMResponse(text="哎，我字呢？")
 
-        tools = (TIMER_TOOLS if include_tools else ALARM_TOOLS) + [REACTION_TOOL, READ_COMMENTS_TOOL, SEARCH_BILIBILI_TOOL, SEARCH_XHS_TOOL]
-        if include_search:
-            tools = tools + [SEARCH_TOOL]
-        tools = tools + [_build_speak_tool()]
+        tools: list = []
         return self.client.stream_with_tools(
             messages=messages,
             system_prompt=load_system_prompt(),

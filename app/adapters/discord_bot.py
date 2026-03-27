@@ -239,6 +239,40 @@ class DiscordBot:
             pending_messages=pending_messages,
         )
 
+    async def _build_messages_for_api(
+        self,
+        *,
+        channel_id: int,
+        pending_messages: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        live_block = self.context_builder.build_live_block(channel_id=channel_id)
+        estimated_tokens = self.context_builder.estimate_tokens(live_block)
+        if self.settings.app_mode == "debug":
+            self.logger.info(
+                f"🧮 transcript_tokens ch={channel_id} est_tokens={estimated_tokens} "
+                f"limit={self.settings.transcript_max_tokens}"
+            )
+        self.reply_service.set_debug_context_meta(
+            estimated_tokens=estimated_tokens,
+            limit=self.settings.transcript_max_tokens,
+        )
+        if estimated_tokens > self.settings.transcript_max_tokens:
+            self.logger.info(
+                f"🗜️ transcript_over_limit ch={channel_id} est_tokens={estimated_tokens} "
+                f"limit={self.settings.transcript_max_tokens} -> compress"
+            )
+            try:
+                await asyncio.to_thread(
+                    self.compression_service.compress_history,
+                    channel_id=channel_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("UNKNOWN", "auto compression failed", exc=exc)
+        return self.context_builder.build_messages_for_api(
+            channel_id=channel_id,
+            pending_messages=pending_messages,
+        )
+
     async def _watch_env_changes(self) -> None:
         while True:
             await asyncio.sleep(1.0)
@@ -527,11 +561,11 @@ class DiscordBot:
             "time": pending.first_time,
             "content": api_content,
         }
-        transcript = await self._build_context_for_api(
+        messages = await self._build_messages_for_api(
             channel_id=channel_id,
             pending_messages=[pending_entry],
         )
-        if not transcript:
+        if not messages:
             self.logger.error("LOGIC", "empty transcript, skip api request")
             return
         self.history_store.append_entry(
@@ -541,9 +575,6 @@ class DiscordBot:
             time=pending.first_time,
             content=merged_text,
         )
-        if self.settings.show_api_payload:
-            self.logger.info(f"📨 api_payload\n{transcript}")
-        messages = [{"role": "user", "content": transcript}]
         merged_one_line = merged_text.replace("\n", "\\n")
         now_send = time.monotonic()
         wait_from_last_msg = now_send - pending.last_message_at
@@ -557,7 +588,7 @@ class DiscordBot:
                 pending.anchor_message, pending.channel, messages,
             )
             reply = (response.text or "").strip()
-            has_search = any(tc.name in ("web_search", "search_xiaohongshu", "search_bilibili") for tc in response.tool_calls)
+            has_search = any(tc.name in ("web_search", "search_bilibili") for tc in response.tool_calls)
             if reply and not has_search:
                 self.history_store.append_entry(
                     channel_id=channel_id,
@@ -569,15 +600,7 @@ class DiscordBot:
             self._log_typing(
                 f"🚀 api_sent user={pending.user_label} chunks={len(pending.chunks)} merged_len={len(merged_text)}"
             )
-            has_xhs = any(tc.name == "search_xiaohongshu" for tc in response.tool_calls)
-            edit_msg = sent_msgs[-1] if sent_msgs and has_search and not has_xhs else None
-            if has_xhs and sent_msgs:
-                for _m in sent_msgs:
-                    try:
-                        await _m.delete()
-                    except Exception:
-                        pass
-                edit_msg = None
+            edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
             await self._handle_tool_calls(
                 response,
                 channel_id,
@@ -614,11 +637,11 @@ class DiscordBot:
             "time": now_clock,
             "content": api_content,
         }
-        transcript = await self._build_context_for_api(
+        messages = await self._build_messages_for_api(
             channel_id=channel_id,
             pending_messages=[pending_entry],
         )
-        if not transcript:
+        if not messages:
             self.logger.error("LOGIC", "empty transcript, skip api request")
             return
         self.history_store.append_entry(
@@ -628,9 +651,6 @@ class DiscordBot:
             time=now_clock,
             content=text,
         )
-        if self.settings.show_api_payload:
-            self.logger.info(f"📨 api_payload\n{transcript}")
-        messages = [{"role": "user", "content": transcript}]
         text_one_line = text.replace("\n", "\\n")
         self.logger.info(f"✅ api_request_sent (immediate) includes={text_one_line}")
 
@@ -640,7 +660,7 @@ class DiscordBot:
                 message, message.channel, messages,
             )
             reply = (response.text or "").strip()
-            has_search = any(tc.name in ("web_search", "search_xiaohongshu", "search_bilibili") for tc in response.tool_calls)
+            has_search = any(tc.name in ("web_search", "search_bilibili") for tc in response.tool_calls)
             if reply and not has_search:
                 self.history_store.append_entry(
                     channel_id=channel_id,
@@ -649,15 +669,7 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-            has_xhs = any(tc.name == "search_xiaohongshu" for tc in response.tool_calls)
-            edit_msg = sent_msgs[-1] if sent_msgs and has_search and not has_xhs else None
-            if has_xhs and sent_msgs:
-                for _m in sent_msgs:
-                    try:
-                        await _m.delete()
-                    except Exception:
-                        pass
-                edit_msg = None
+            edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
             await self._handle_tool_calls(
                 response,
                 channel_id,
@@ -766,12 +778,6 @@ class DiscordBot:
                 offset = int(tc.input.get("offset", 0))
                 if keyword:
                     await self._execute_search_bilibili(keyword, count, offset, channel_id, channel, prior_messages, edit_msg=edit_msg)
-            if tc.name == "search_xiaohongshu":
-                keyword = str(tc.input.get("keyword", "")).strip()
-                count = int(tc.input.get("count", 5))
-                offset = int(tc.input.get("offset", 0))
-                if keyword:
-                    await self._execute_search_xhs(keyword, count, offset, channel_id, channel, prior_messages, xhs_depth=kwargs.get("xhs_depth", 0), edit_msg=edit_msg)
             if tc.name == "speak":
                 text = str(tc.input.get("text", "")).strip()
                 emotion = str(tc.input.get("emotion", "")).strip()
@@ -1444,7 +1450,7 @@ class DiscordBot:
                     None, channel, messages,
                 )
             reply = (response.text or "").strip()
-            has_search = any(tc.name in ("web_search", "search_xiaohongshu", "search_bilibili") for tc in response.tool_calls)
+            has_search = any(tc.name in ("web_search", "search_bilibili") for tc in response.tool_calls)
             if reply and not has_search:
                 self.history_store.append_entry(
                     channel_id=channel_id,
@@ -1453,15 +1459,7 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-            has_xhs = any(tc.name == "search_xiaohongshu" for tc in response.tool_calls)
-            edit_msg = sent_msgs[-1] if sent_msgs and has_search and not has_xhs else None
-            if has_xhs and sent_msgs:
-                for _m in sent_msgs:
-                    try:
-                        await _m.delete()
-                    except Exception:
-                        pass
-                edit_msg = None
+            edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
             await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages, edit_msg=edit_msg)
             self._schedule_proactive(channel_id, channel)
         except Exception as exc:  # noqa: BLE001
@@ -1849,6 +1847,21 @@ class DiscordBot:
             text = (text + "\n" if text else "") + "\n".join(image_descs)
 
         url_descs = await self._fetch_url_previews(text)
+
+        # Discord embed previews — covers platforms not handled by _fetch_url_previews
+        from app.infra.browser_client import extract_urls as _extract_urls
+        fetched_urls = set(_extract_urls(text))
+        for embed in message.embeds:
+            url = embed.url or ""
+            if url and url not in fetched_urls:
+                parts = []
+                if embed.title:
+                    parts.append(embed.title)
+                if embed.description:
+                    parts.append(embed.description[:300])
+                if parts:
+                    url_descs.append("[链接摘要 " + url + ": " + " — ".join(parts) + "]")
+                    fetched_urls.add(url)
 
         if not text:
             return

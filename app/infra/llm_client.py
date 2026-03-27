@@ -27,7 +27,7 @@ class LLMResponse:
 
 class LLMClient:
     ANTHROPIC_VERSION = "2023-06-01"
-    DEFAULT_MAX_TOKENS = 16000
+    DEFAULT_MAX_TOKENS = 32000
 
     DEBUG_DIR = Path(__file__).resolve().parents[2] / "data" / "debug"
     DEBUG_PAYLOAD_PATH = DEBUG_DIR / "llm_requests.log"
@@ -208,6 +208,43 @@ class LLMClient:
             f.write("\n")
         self.debug_context_meta = {}
 
+    @staticmethod
+    def _inject_message_cache(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Cache the penultimate user message and the last assistant message (both stable next turn)."""
+        def _add_cache(msgs: list, idx: int) -> None:
+            msg = dict(msgs[idx])
+            content = msg.get("content")
+            if isinstance(content, str):
+                content = [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+            elif isinstance(content, list) and content:
+                content = list(content)
+                last_block = dict(content[-1]) if isinstance(content[-1], dict) else {"type": "text", "text": str(content[-1])}
+                last_block["cache_control"] = {"type": "ephemeral"}
+                content[-1] = last_block
+            else:
+                return
+            msg["content"] = content
+            msgs[idx] = msg
+
+        msgs = list(messages)
+        user_indices = [i for i, m in enumerate(msgs) if m.get("role") == "user"]
+        asst_indices = [i for i, m in enumerate(msgs) if m.get("role") == "assistant"]
+
+        # Cache 3rd-to-last user message and 2nd-to-last assistant (leaves last 2 exchanges live)
+        if len(user_indices) >= 3:
+            _add_cache(msgs, user_indices[-3])
+        elif len(user_indices) >= 2:
+            _add_cache(msgs, user_indices[-2])
+        elif user_indices:
+            _add_cache(msgs, user_indices[-1])
+
+        if len(asst_indices) >= 2:
+            _add_cache(msgs, asst_indices[-2])
+        elif asst_indices:
+            _add_cache(msgs, asst_indices[-1])
+
+        return msgs
+
     def _payload(
         self,
         messages: list[dict[str, str]],
@@ -218,14 +255,12 @@ class LLMClient:
             payload: dict[str, Any] = {
                 "model": self.model,
                 "max_tokens": self.DEFAULT_MAX_TOKENS,
-                "messages": messages,
+                "messages": self._inject_message_cache(messages),
             }
             if system_prompt:
                 payload["system"] = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
             if tools:
-                tools_cached = [dict(t) for t in tools]
-                tools_cached[-1]["cache_control"] = {"type": "ephemeral"}
-                payload["tools"] = tools_cached
+                payload["tools"] = tools
             return payload
 
         payload = {
