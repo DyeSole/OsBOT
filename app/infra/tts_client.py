@@ -1,7 +1,6 @@
 """MiniMax Text-to-Speech client (T2A v2)."""
 from __future__ import annotations
 
-import io
 import logging
 
 import httpx
