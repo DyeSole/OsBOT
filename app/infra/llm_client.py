@@ -42,9 +42,7 @@ class LLMClient:
         return self.base_url.endswith("/messages")
 
     def _request_url(self) -> str:
-        if self._is_anthropic_messages_api():
-            return self.base_url
-        if self.base_url.endswith("/chat/completions"):
+        if self._is_anthropic_messages_api() or self.base_url.endswith("/chat/completions"):
             return self.base_url
         return f"{self.base_url}/chat/completions"
 
@@ -211,16 +209,19 @@ class LLMClient:
             raise RuntimeError("llm response missing message content")
         return LLMResponse(text=text, tool_calls=tool_calls)
 
+    def _validate_config(self) -> None:
+        if not self.base_url:
+            raise ValueError("missing BASE_URL")
+        if not self.api_key:
+            raise ValueError("missing API_KEY")
+
     def _do_request(
         self,
         messages: list[dict[str, str]],
         system_prompt: str,
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        if not self.base_url:
-            raise ValueError("missing BASE_URL")
-        if not self.api_key:
-            raise ValueError("missing API_KEY")
+        self._validate_config()
 
         payload = self._payload(messages, system_prompt, tools)
         self._dump_payload_debug(payload=payload, tools=tools, stream=False)
@@ -258,10 +259,7 @@ class LLMClient:
         tools: list[dict[str, Any]],
         on_text: Callable[[str], None],
     ) -> LLMResponse:
-        if not self.base_url:
-            raise ValueError("missing BASE_URL")
-        if not self.api_key:
-            raise ValueError("missing API_KEY")
+        self._validate_config()
 
         payload = self._payload(messages, system_prompt, tools)
         payload["stream"] = True
@@ -296,7 +294,7 @@ class LLMClient:
                 continue
             try:
                 data = json.loads(line[6:])
-            except (json.JSONDecodeError, ValueError):
+            except json.JSONDecodeError:
                 continue
             evt = data.get("type", "")
 
@@ -340,7 +338,7 @@ class LLMClient:
                 break
             try:
                 data = json.loads(data_str)
-            except (json.JSONDecodeError, ValueError):
+            except json.JSONDecodeError:
                 continue
             choices = data.get("choices") or []
             if not choices:
@@ -370,6 +368,7 @@ class LLMClient:
 
         return LLMResponse(text="".join(text_parts).strip(), tool_calls=tool_calls)
 
+
 class VisionClient:
 
     ANTHROPIC_VERSION = "2023-06-01"
@@ -389,9 +388,7 @@ class VisionClient:
         return self.base_url.endswith("/messages")
 
     def _request_url(self) -> str:
-        if self._is_anthropic():
-            return self.base_url
-        if self.base_url.endswith("/chat/completions"):
+        if self._is_anthropic() or self.base_url.endswith("/chat/completions"):
             return self.base_url
         return f"{self.base_url}/chat/completions"
 

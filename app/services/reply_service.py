@@ -136,7 +136,6 @@ class ReplyService:
         else:
             self.vision_client = main_vision
 
-
     def generate_reply(self, messages: list[dict[str, str]]) -> str:
         if not messages:
             return "哎，我字呢？"

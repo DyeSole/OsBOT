@@ -6,7 +6,7 @@ import queue as _queue
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime, time as dt_time
+from datetime import datetime, timedelta, time as dt_time
 
 from app.core.clock import now as _now, now_clock as _now_clock_util
 
@@ -419,8 +419,6 @@ class DiscordBot:
                 return value, sent_msgs  # type: ignore[return-value]
             elif kind == "error":
                 raise value  # type: ignore[misc]
-
-        return LLMResponse(text=""), sent_msgs  # unreachable
 
     @staticmethod
     def _channel_label(channel) -> str:  # type: ignore[no-untyped-def]
@@ -1067,7 +1065,6 @@ class DiscordBot:
         now = _now()
         end_today = now.replace(hour=end.hour, minute=end.minute, second=0, microsecond=0)
         if end_today <= now:
-            from datetime import timedelta
             end_today += timedelta(days=1)
         return (end_today - now).total_seconds()
 
@@ -1111,8 +1108,8 @@ class DiscordBot:
             try:
                 async with channel.typing():
                     response = await asyncio.to_thread(
-                    self.reply_service.generate_reply_with_tools, messages, include_tools=True,
-                )
+                        self.reply_service.generate_reply_with_tools, messages, include_tools=True,
+                    )
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "quiet flush api request failed", exc=exc)
                 continue
@@ -1547,9 +1544,8 @@ class DiscordBot:
                 continue
             try:
                 image_bytes = await att.read()
-                import functools
-                desc = await asyncio.get_event_loop().run_in_executor(
-                    None, functools.partial(vision.describe_image, image_bytes, media_type, system_prompt=vision_prompt, context=context),
+                desc = await asyncio.to_thread(
+                    vision.describe_image, image_bytes, media_type, system_prompt=vision_prompt, context=context,
                 )
                 if desc:
                     descriptions.append(f"[图片: {desc}]")
