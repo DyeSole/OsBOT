@@ -149,25 +149,8 @@ class CompressionService:
 
     @staticmethod
     def _parse_json_object(raw: str) -> dict[str, Any]:
-        text = (raw or "").strip()
-        if not text:
-            return {}
-        try:
-            data = json.loads(text)
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            pass
-
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
-            snippet = text[start : end + 1]
-            try:
-                data = json.loads(snippet)
-                return data if isinstance(data, dict) else {}
-            except Exception:
-                return {}
-        return {}
+        from app.infra.json_utils import extract_json_object
+        return extract_json_object(raw)
 
     @staticmethod
     def _now_clock() -> str:

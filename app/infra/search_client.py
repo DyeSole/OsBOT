@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import json
-import re
-
 import httpx
+
+from app.infra.json_utils import extract_json_array
 from duckduckgo_search import DDGS
 
 
@@ -79,12 +78,8 @@ def _grok_search(
     data = resp.json()
 
     text = (data["choices"][0]["message"]["content"] or "").strip()
-    match = re.search(r"\[.*\]", text, re.DOTALL)
-    if not match:
-        return []
-    try:
-        items = json.loads(match.group())
-    except (json.JSONDecodeError, TypeError):
+    items = extract_json_array(text)
+    if not items:
         return []
     return [
         {
