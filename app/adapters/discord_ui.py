@@ -115,6 +115,12 @@ SEARCH_API_FIELDS = [
     FieldDef("SEARCH_MODEL", "SEARCH_MODEL", required=False, max_length=120, placeholder="留空默认 grok-3-mini-fast"),
 ]
 
+COMPRESSION_API_FIELDS = [
+    FieldDef("COMPRESSION_BASE_URL", "COMPRESSION_BASE_URL", required=False, placeholder="留空则使用聊天 API"),
+    FieldDef("COMPRESSION_API_KEY", "COMPRESSION_API_KEY", required=False, placeholder="留空则使用聊天 API"),
+    FieldDef("COMPRESSION_MODEL", "COMPRESSION_MODEL", required=False, max_length=120, placeholder="留空则使用聊天 API"),
+]
+
 QUIET_HOURS_FIELDS = [
     FieldDef("QUIET_ENABLED", "开关（1=开启 0=关闭）", max_length=1),
     FieldDef("QUIET_START", "开始时间（如 23:00）", max_length=5),
@@ -333,6 +339,17 @@ class ApiToolboxView(BotView):
             confirm="API 配置\n\n搜索 API 配置已保存，立即生效。", return_view=ApiToolboxView,
         ))
 
+    @discord.ui.button(label="压缩 API", style=discord.ButtonStyle.primary)
+    async def compression_api(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(ConfigModal(
+            self.bot, fields=COMPRESSION_API_FIELDS, title="压缩 API 配置",
+            confirm="API 配置\n\n压缩 API 配置已保存，立即生效。", return_view=ApiToolboxView,
+        ))
+
+    @discord.ui.button(label="压缩提示词", style=discord.ButtonStyle.secondary)
+    async def edit_compression(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(PromptEditModal(self.bot, target="compression", title="编辑压缩提示词"))
+
     @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(content="工具箱", view=ToolboxView(self.bot))
@@ -346,10 +363,6 @@ class PromptToolboxView(BotView):
     @discord.ui.button(label="用户信息", style=discord.ButtonStyle.primary)
     async def edit_userinfo(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(PromptEditModal(self.bot, target="userinfo", title="编辑用户信息"))
-
-    @discord.ui.button(label="编辑压缩提示词", style=discord.ButtonStyle.secondary)
-    async def edit_compression(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(PromptEditModal(self.bot, target="compression", title="编辑压缩提示词"))
 
     @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
