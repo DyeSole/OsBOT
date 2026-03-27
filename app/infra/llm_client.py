@@ -27,7 +27,7 @@ class LLMResponse:
 
 class LLMClient:
     ANTHROPIC_VERSION = "2023-06-01"
-    DEFAULT_MAX_TOKENS = 1024
+    DEFAULT_MAX_TOKENS = 16000
 
     DEBUG_DIR = Path(__file__).resolve().parents[2] / "data" / "debug"
     DEBUG_PAYLOAD_PATH = DEBUG_DIR / "llm_requests.log"
@@ -57,6 +57,7 @@ class LLMClient:
         }
         if self._is_anthropic_messages_api():
             headers["anthropic-version"] = self.ANTHROPIC_VERSION
+        headers["anthropic-beta"] = "prompt-caching-2024-07-31"
         return headers
 
     def _can_count_tokens(self) -> bool:
@@ -220,9 +221,11 @@ class LLMClient:
                 "messages": messages,
             }
             if system_prompt:
-                payload["system"] = system_prompt
+                payload["system"] = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
             if tools:
-                payload["tools"] = tools
+                tools_cached = [dict(t) for t in tools]
+                tools_cached[-1]["cache_control"] = {"type": "ephemeral"}
+                payload["tools"] = tools_cached
             return payload
 
         payload = {
@@ -230,7 +233,7 @@ class LLMClient:
             "messages": ([{"role": "system", "content": system_prompt}] if system_prompt else []) + messages,
         }
         if tools:
-            payload["tools"] = [
+            formatted = [
                 {
                     "type": "function",
                     "function": {
@@ -241,6 +244,8 @@ class LLMClient:
                 }
                 for t in tools
             ]
+            formatted[-1]["cache_control"] = {"type": "ephemeral"}
+            payload["tools"] = formatted
         return payload
 
     @staticmethod
@@ -333,7 +338,14 @@ class LLMClient:
             snippet = resp.text[:200].replace("\n", " ")
             raise RuntimeError(f"llm http {resp.status_code}: {snippet}")
 
-        return resp.json()
+        data = resp.json()
+        usage = data.get("usage") or {}
+        cache_create = usage.get("cache_creation_input_tokens", 0)
+        cache_read = usage.get("cache_read_input_tokens", 0)
+        input_tokens = usage.get("input_tokens", 0)
+        if cache_create or cache_read:
+            log.warning("💾 cache create=%d read=%d input=%d", cache_create, cache_read, input_tokens)
+        return data
 
     def generate(self, messages: list[dict[str, str]], system_prompt: str) -> str:
         data = self._do_request(messages, system_prompt)
@@ -398,7 +410,16 @@ class LLMClient:
                 continue
             evt = data.get("type", "")
 
-            if evt == "content_block_start":
+            if evt == "message_start":
+                usage = (data.get("message") or {}).get("usage") or {}
+                cache_create = usage.get("cache_creation_input_tokens", 0)
+                cache_read = usage.get("cache_read_input_tokens", 0)
+                input_tokens = usage.get("input_tokens", 0)
+                if cache_create or cache_read:
+                    log.warning("💾 cache create=%d read=%d input=%d", cache_create, cache_read, input_tokens)
+                else:
+                    log.warning("💾 no cache: input=%d", input_tokens)
+            elif evt == "content_block_start":
                 block = data.get("content_block", {})
                 if block.get("type") == "tool_use":
                     current_tool_name = block.get("name", "")
@@ -440,6 +461,12 @@ class LLMClient:
                 data = json.loads(data_str)
             except (json.JSONDecodeError, ValueError):
                 continue
+            usage = data.get("usage")
+            if usage:
+                cache_create = usage.get("cache_creation_input_tokens", 0)
+                cache_read = usage.get("cache_read_input_tokens", 0)
+                input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens", 0)
+                log.warning("💾 cache create=%d read=%d input=%d", cache_create, cache_read, input_tokens)
             choices = data.get("choices") or []
             if not choices:
                 continue
@@ -515,7 +542,8 @@ class VisionClient:
             if self._is_anthropic():
                 payload: dict[str, Any] = {
                     "model": self.model,
-                    "max_tokens": 300,
+                    "max_tokens": 16000,
+                    "stream": False,
                     "messages": [
                         {
                             "role": "user",
@@ -554,7 +582,8 @@ class VisionClient:
                 )
                 payload = {
                     "model": self.model,
-                    "max_tokens": 300,
+                    "max_tokens": 16000,
+                    "stream": False,
                     "messages": messages,
                 }
 
@@ -593,5 +622,8 @@ class VisionClient:
             log.exception("vision describe_image failed")
             if self.fallback:
                 log.info("vision exception, falling back to main model")
-                return self.fallback.describe_image(image_bytes, media_type, system_prompt=system_prompt, context=context)
+                try:
+                    return self.fallback.describe_image(image_bytes, media_type, system_prompt=system_prompt, context=context)
+                except Exception:
+                    log.exception("vision fallback also failed")
             return None

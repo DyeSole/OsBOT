@@ -24,14 +24,6 @@ from app.services.reply_service import ReplyService
 from app.adapters.discord_ui import ToolboxView
 
 
-LOGIN_TARGETS: dict[str, tuple[str, str]] = {
-    "bilibili": ("bilibili", "https://passport.bilibili.com/login"),
-    "b站": ("bilibili", "https://passport.bilibili.com/login"),
-    "哔哩哔哩": ("bilibili", "https://passport.bilibili.com/login"),
-    "xiaohongshu": ("xiaohongshu", "https://www.xiaohongshu.com"),
-    "小红书": ("xiaohongshu", "https://www.xiaohongshu.com"),
-    "rednote": ("xiaohongshu", "https://www.xiaohongshu.com"),
-}
 
 
 @dataclass
@@ -171,65 +163,6 @@ class DiscordBot:
                 ephemeral=True,
             )
 
-    async def handle_browser_login(self, interaction: discord.Interaction, *, app: str) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            import io
-            from app.infra.browser_client import (
-                close_login_session,
-                finish_login_session,
-                start_login_session,
-            )
-
-            profile, url, source = await self._resolve_login_target(app)
-            session = await start_login_session(profile, url)
-            file = discord.File(
-                io.BytesIO(session["preview"]),
-                filename=f"{profile}-login-preview.png",
-            )
-            initial_text = "\n".join(
-                [
-                    "浏览器登录",
-                    "",
-                    f"应用: {app}",
-                    f"登录页: {url}",
-                    f"来源: {source}",
-                    "截图已返回，请在 120 秒内完成扫码/登录。",
-                    "我会每 5 秒检查一次，成功后立即保存登录态。",
-                ]
-            )
-            await interaction.edit_original_response(
-                content=initial_text,
-                attachments=[file],
-            )
-            try:
-                msg = await finish_login_session(
-                    session,
-                    profile,
-                    login_url=url,
-                    timeout_ms=120_000,
-                    poll_interval_ms=5_000,
-                )
-            finally:
-                await close_login_session(session)
-            await interaction.edit_original_response(
-                content=f"{initial_text}\n\n结果: {msg}",
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.logger.error("BROWSER", "login save failed", exc=exc)
-            await interaction.edit_original_response(
-                content=f"浏览器登录\n\n保存登录态失败: {exc}",
-            )
-
-    @staticmethod
-    def browser_profiles_text() -> str:
-        from app.infra.browser_client import list_profiles
-
-        profiles = list_profiles()
-        if profiles:
-            return "社交平台\n\n已保存的登录态:\n" + "\n".join(f"  • {p}" for p in profiles)
-        return "社交平台\n\n还没有保存任何登录态。"
-
     def apply_settings(self, settings: Settings) -> None:
         old_token = self.settings.discord_bot_token
         self.settings = settings
@@ -252,47 +185,6 @@ class DiscordBot:
                 "CONFIG",
                 "DISCORD_BOT_TOKEN changed in .env but live token swap is not supported; restart required.",
             )
-
-    @staticmethod
-    def _slugify_profile(value: str) -> str:
-        profile = re.sub(r"[^\w.-]+", "_", value.strip().lower(), flags=re.UNICODE).strip("._")
-        return profile or "browser"
-
-    @staticmethod
-    def _pick_login_url(results: list[dict[str, str]]) -> str:
-        for item in results:
-            href = str(item.get("href", "")).strip()
-            if href.startswith(("http://", "https://")):
-                return href
-        return ""
-
-    async def _resolve_login_target(self, app: str) -> tuple[str, str, str]:
-        app_name = app.strip()
-        if not app_name:
-            raise ValueError("应用名称不能为空")
-
-        preset = LOGIN_TARGETS.get(app_name.lower())
-        if preset is None:
-            preset = LOGIN_TARGETS.get(app_name)
-        if preset is not None:
-            profile, url = preset
-            return profile, url, "preset"
-
-        from app.infra.search_client import web_search
-
-        query = f"{app_name} 官方登录页"
-        results = await asyncio.to_thread(
-            web_search,
-            query,
-            max_results=5,
-            base_url=self.settings.search_base_url,
-            api_key=self.settings.search_api_key,
-            model=self.settings.search_model,
-        )
-        url = self._pick_login_url(results)
-        if not url:
-            raise RuntimeError(f"未找到 {app_name} 的登录页，请后续补充预设站点。")
-        return self._slugify_profile(app_name), url, "search"
 
     async def reload_settings_if_needed(self) -> bool:
         current_mtime = env_last_modified()
@@ -395,17 +287,10 @@ class DiscordBot:
         if target_channel is None:
             return
         for idx, sentence in enumerate(sentences):
-            if idx == 0 and anchor_message is not None:
-                await anchor_message.reply(
-                    sentence,
-                    mention_author=False,
-                    allowed_mentions=AllowedMentions.none(),
-                )
-            else:
-                await target_channel.send(
-                    sentence,
-                    allowed_mentions=AllowedMentions.none(),
-                )
+            await target_channel.send(
+                sentence,
+                allowed_mentions=AllowedMentions.none(),
+            )
             if idx < len(sentences) - 1:
                 await asyncio.sleep(0.8)
 
@@ -443,8 +328,12 @@ class DiscordBot:
         novel_msg: discord.Message | None = None
         novel_full = ""
         novel_last_edit = 0.0
+        _stream_deadline = loop.time() + 120  # 2-minute hard cap
 
         while True:
+            if loop.time() > _stream_deadline:
+                self.logger.error("LLM", "stream_and_send timed out after 300s")
+                return LLMResponse(text=""), sent_msgs
             try:
                 kind, value = q.get_nowait()
             except _queue.Empty:
@@ -461,15 +350,9 @@ class DiscordBot:
                         if display:
                             try:
                                 if novel_msg is None:
-                                    if anchor_message is not None:
-                                        novel_msg = await anchor_message.reply(
-                                            display, mention_author=False,
-                                            allowed_mentions=AllowedMentions.none(),
-                                        )
-                                    else:
-                                        novel_msg = await channel.send(
-                                            display, allowed_mentions=AllowedMentions.none(),
-                                        )
+                                    novel_msg = await channel.send(
+                                        display, allowed_mentions=AllowedMentions.none(),
+                                    )
                                     sent_msgs.append(novel_msg)
                                 elif len(display) <= 2000:
                                     await novel_msg.edit(content=display)
@@ -491,13 +374,7 @@ class DiscordBot:
                             if not is_first and delay > 0:
                                 async with channel.typing():
                                     await asyncio.sleep(delay)
-                            if is_first and anchor_message is not None:
-                                msg = await anchor_message.reply(
-                                    s, mention_author=False,
-                                    allowed_mentions=AllowedMentions.none(),
-                                )
-                            else:
-                                msg = await channel.send(
+                            msg = await channel.send(
                                     s, allowed_mentions=AllowedMentions.none(),
                                 )
                             sent_msgs.append(msg)
@@ -509,15 +386,9 @@ class DiscordBot:
                     if display:
                         try:
                             if novel_msg is None:
-                                if anchor_message is not None:
-                                    novel_msg = await anchor_message.reply(
-                                        display, mention_author=False,
-                                        allowed_mentions=AllowedMentions.none(),
-                                    )
-                                else:
-                                    novel_msg = await channel.send(
-                                        display, allowed_mentions=AllowedMentions.none(),
-                                    )
+                                novel_msg = await channel.send(
+                                    display, allowed_mentions=AllowedMentions.none(),
+                                )
                                 sent_msgs.append(novel_msg)
                             elif len(display) <= 2000:
                                 await novel_msg.edit(content=display)
@@ -528,13 +399,7 @@ class DiscordBot:
                         if not is_first and self.settings.chat_reply_delay_seconds > 0:
                             async with channel.typing():
                                 await asyncio.sleep(self.settings.chat_reply_delay_seconds)
-                        if is_first and anchor_message is not None:
-                            msg = await anchor_message.reply(
-                                buffer.strip(), mention_author=False,
-                                allowed_mentions=AllowedMentions.none(),
-                            )
-                        else:
-                            msg = await channel.send(
+                        msg = await channel.send(
                                 buffer.strip(), allowed_mentions=AllowedMentions.none(),
                             )
                         sent_msgs.append(msg)
@@ -692,7 +557,7 @@ class DiscordBot:
                 pending.anchor_message, pending.channel, messages,
             )
             reply = (response.text or "").strip()
-            has_search = any(tc.name == "web_search" for tc in response.tool_calls)
+            has_search = any(tc.name in ("web_search", "search_xiaohongshu", "search_bilibili") for tc in response.tool_calls)
             if reply and not has_search:
                 self.history_store.append_entry(
                     channel_id=channel_id,
@@ -704,7 +569,15 @@ class DiscordBot:
             self._log_typing(
                 f"🚀 api_sent user={pending.user_label} chunks={len(pending.chunks)} merged_len={len(merged_text)}"
             )
-            edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
+            has_xhs = any(tc.name == "search_xiaohongshu" for tc in response.tool_calls)
+            edit_msg = sent_msgs[-1] if sent_msgs and has_search and not has_xhs else None
+            if has_xhs and sent_msgs:
+                for _m in sent_msgs:
+                    try:
+                        await _m.delete()
+                    except Exception:
+                        pass
+                edit_msg = None
             await self._handle_tool_calls(
                 response,
                 channel_id,
@@ -767,7 +640,7 @@ class DiscordBot:
                 message, message.channel, messages,
             )
             reply = (response.text or "").strip()
-            has_search = any(tc.name == "web_search" for tc in response.tool_calls)
+            has_search = any(tc.name in ("web_search", "search_xiaohongshu", "search_bilibili") for tc in response.tool_calls)
             if reply and not has_search:
                 self.history_store.append_entry(
                     channel_id=channel_id,
@@ -776,7 +649,15 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-            edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
+            has_xhs = any(tc.name == "search_xiaohongshu" for tc in response.tool_calls)
+            edit_msg = sent_msgs[-1] if sent_msgs and has_search and not has_xhs else None
+            if has_xhs and sent_msgs:
+                for _m in sent_msgs:
+                    try:
+                        await _m.delete()
+                    except Exception:
+                        pass
+                edit_msg = None
             await self._handle_tool_calls(
                 response,
                 channel_id,
@@ -825,9 +706,12 @@ class DiscordBot:
         *,
         prior_messages: list[dict[str, str]] | None = None,
         search_depth: int = 0,
+        xhs_depth: int = 0,
+        read_depth: int = 0,
         edit_msg: discord.Message | None = None,
         had_reply: bool = True,
         source_message: discord.Message | None = None,
+        **kwargs,
     ) -> None:
         alarms_set = self._process_timer_calls(response.tool_calls, channel_id, channel)
         if alarms_set and not had_reply:
@@ -865,7 +749,10 @@ class DiscordBot:
             if tc.name == "read_comments":
                 url = str(tc.input.get("url", "")).strip()
                 if url:
-                    await self._execute_read_comments(url, channel_id, channel, prior_messages)
+                    if read_depth >= 2:
+                        self.logger.info(f"💬 read_comments_depth_limit url={url} depth={read_depth}")
+                    else:
+                        await self._execute_read_comments(url, channel_id, channel, prior_messages, read_depth=read_depth)
             if tc.name == "web_search":
                 query = tc.input.get("query", "")
                 if query:
@@ -873,6 +760,23 @@ class DiscordBot:
                         self.logger.info(f"🔍 search_depth_limit query={query} depth={search_depth}")
                     else:
                         await self._execute_search(query, channel_id, channel, prior_messages, search_depth=search_depth, edit_msg=edit_msg)
+            if tc.name == "search_bilibili":
+                keyword = str(tc.input.get("keyword", "")).strip()
+                count = int(tc.input.get("count", 5))
+                offset = int(tc.input.get("offset", 0))
+                if keyword:
+                    await self._execute_search_bilibili(keyword, count, offset, channel_id, channel, prior_messages, edit_msg=edit_msg)
+            if tc.name == "search_xiaohongshu":
+                keyword = str(tc.input.get("keyword", "")).strip()
+                count = int(tc.input.get("count", 5))
+                offset = int(tc.input.get("offset", 0))
+                if keyword:
+                    await self._execute_search_xhs(keyword, count, offset, channel_id, channel, prior_messages, xhs_depth=kwargs.get("xhs_depth", 0), edit_msg=edit_msg)
+            if tc.name == "speak":
+                text = str(tc.input.get("text", "")).strip()
+                emotion = str(tc.input.get("emotion", "")).strip()
+                if text:
+                    asyncio.create_task(self._send_tts(text, channel, emotion=emotion or None))
 
     async def _execute_read_comments(
         self,
@@ -880,18 +784,49 @@ class DiscordBot:
         channel_id: int,
         channel: discord.abc.Messageable,
         prior_messages: list[dict[str, str]] | None = None,
+        read_depth: int = 0,
     ) -> None:
-        from app.infra.bilibili_client import fetch_bilibili_comments
-        from app.services.reply_service import load_system_prompt
-
         self.logger.info(f"💬 read_comments url={url}")
+        xhs_images: list[bytes] = []
         try:
-            raw = await fetch_bilibili_comments(url)
+            is_xhs = any(d in url for d in ("xiaohongshu.com", "xhslink.com"))
+            is_yt = any(d in url for d in ("youtube.com", "youtu.be"))
+            if any(d in url for d in ("bilibili.com", "b23.tv")):
+                from app.infra.bilibili_client import fetch_bilibili_comments
+                raw = await asyncio.wait_for(fetch_bilibili_comments(url), timeout=35)
+            elif is_xhs:
+                from app.infra.browser_client import fetch_xhs_via_proxy
+                raw, xhs_images = await asyncio.wait_for(fetch_xhs_via_proxy(url), timeout=25)
+            elif is_yt:
+                from app.infra.youtube_client import fetch_youtube_info
+                raw = await asyncio.wait_for(fetch_youtube_info(url), timeout=30)
+            else:
+                raw = None
+        except asyncio.TimeoutError:
+            self.logger.error("BROWSER", f"read_comments timed out: {url}")
+            raw = None
         except Exception as exc:
             self.logger.error("BROWSER", f"read_comments failed: {url}", exc=exc)
-            return
+            raw = None
         if not raw:
-            return
+            raw = f"[链接内容无法读取: {url}]"
+
+        if xhs_images:
+            import functools
+            vision = self.reply_service.vision_client
+            img_descs: list[str] = []
+            for img_bytes in xhs_images:
+                try:
+                    desc = await asyncio.get_event_loop().run_in_executor(
+                        None, functools.partial(vision.describe_image, img_bytes, "image/jpeg")
+                    )
+                    if desc:
+                        img_descs.append(desc)
+                except Exception:
+                    pass
+            if img_descs:
+                raw = raw + "\n\n[帖子图片:\n" + "\n".join(f"- {d}" for d in img_descs) + "]"
+
 
         recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
         recent_block = self.history_store.render_entries(recent) if recent else ""
@@ -921,7 +856,123 @@ class DiscordBot:
                 )
             except Exception as exc:
                 self.logger.error("UNKNOWN", "failed to send read_comments reply", exc=exc)
-        await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
+        await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages, read_depth=read_depth + 1)
+
+    async def _execute_search_bilibili(
+        self,
+        keyword: str,
+        count: int,
+        offset: int,
+        channel_id: int,
+        channel: discord.abc.Messageable,
+        prior_messages: list[dict[str, str]] | None = None,
+        edit_msg: discord.Message | None = None,
+    ) -> None:
+        self.logger.info(f"📺 search_bilibili keyword={keyword} count={count} offset={offset}")
+        try:
+            from app.infra.bilibili_client import search_bilibili
+            results = await search_bilibili(keyword, count=count, offset=offset)
+        except Exception as exc:
+            self.logger.error("BROWSER", f"search_bilibili failed: {keyword}", exc=exc)
+            return
+        if not results:
+            return
+
+        lines_out = [f"B站『{keyword}』搜索结果："]
+        for i, r in enumerate(results, 1):
+            parts = [f"{i}. {r['title']}"]
+            meta = []
+            if r.get("up"):
+                meta.append(f"UP: {r['up']}")
+            if r.get("play"):
+                meta.append(f"播放: {r['play']}")
+            if r.get("duration"):
+                meta.append(r["duration"])
+            if meta:
+                parts.append(" | ".join(meta))
+            parts.append(r["url"])
+            lines_out.append("\n   ".join(parts))
+        reply = "\n".join(lines_out)
+
+        self.logger.info(f"📺 search_bilibili_done keyword={keyword} results={len(results)}")
+        try:
+            if edit_msg and len(reply) <= 2000:
+                await edit_msg.edit(content=reply)
+            else:
+                await channel.send(reply, allowed_mentions=AllowedMentions.none())
+            self.history_store.append_entry(
+                channel_id=channel_id,
+                role="assistant",
+                username=self.settings.bot_key,
+                time=self._now_clock(),
+                content=reply,
+            )
+        except Exception as exc:
+            self.logger.error("UNKNOWN", "failed to send search_bilibili reply", exc=exc)
+
+    async def _execute_search_xhs(
+        self,
+        keyword: str,
+        count: int,
+        offset: int,
+        channel_id: int,
+        channel: discord.abc.Messageable,
+        prior_messages: list[dict[str, str]] | None = None,
+        xhs_depth: int = 0,
+        edit_msg: discord.Message | None = None,
+    ) -> None:
+        from app.infra.search_client import web_search
+
+        if xhs_depth >= 5:
+            self.logger.info(f"🍠 search_xhs_depth_limit keyword={keyword} depth={xhs_depth}")
+            return
+        self.logger.info(f"🍠 search_xhs keyword={keyword} count={count} offset={offset} depth={xhs_depth}")
+        query = f"site:xiaohongshu.com {keyword}"
+        try:
+            results = await asyncio.to_thread(
+                web_search,
+                query,
+                max_results=min(count or 5, 10),
+                base_url=self.settings.search_base_url,
+                api_key=self.settings.search_api_key,
+                model=self.settings.search_model,
+            )
+        except Exception as exc:
+            self.logger.error("BROWSER", f"search_xhs failed: {keyword}", exc=exc)
+            return
+        if not results:
+            return
+
+        lines_out = [f"小红书『{keyword}』搜索结果："]
+        for i, r in enumerate(results, 1):
+            parts = [f"{i}."]
+            if r.get("title"):
+                parts.append(r["title"])
+            if r.get("body"):
+                parts.append(r["body"][:100])
+            if r.get("href"):
+                parts.append(r["href"])
+            lines_out.append(" | ".join(parts))
+        reply = "\n".join(lines_out)
+
+        self.logger.info(f"🍠 search_xhs_done keyword={keyword} results={len(results)}")
+        try:
+            if edit_msg:
+                if len(reply) <= 2000:
+                    await edit_msg.edit(content=reply)
+                else:
+                    await channel.send(reply, allowed_mentions=AllowedMentions.none())
+            else:
+                await channel.send(reply, allowed_mentions=AllowedMentions.none())
+            self.history_store.append_entry(
+                channel_id=channel_id,
+                role="assistant",
+                username=self.settings.bot_key,
+                time=self._now_clock(),
+                content=reply,
+            )
+        except Exception as exc:
+            self.logger.error("UNKNOWN", "failed to send search_xhs reply", exc=exc)
 
     async def _execute_search(
         self,
@@ -1393,7 +1444,7 @@ class DiscordBot:
                     None, channel, messages,
                 )
             reply = (response.text or "").strip()
-            has_search = any(tc.name == "web_search" for tc in response.tool_calls)
+            has_search = any(tc.name in ("web_search", "search_xiaohongshu", "search_bilibili") for tc in response.tool_calls)
             if reply and not has_search:
                 self.history_store.append_entry(
                     channel_id=channel_id,
@@ -1402,7 +1453,15 @@ class DiscordBot:
                     time=self._now_clock(),
                     content=reply,
                 )
-            edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
+            has_xhs = any(tc.name == "search_xiaohongshu" for tc in response.tool_calls)
+            edit_msg = sent_msgs[-1] if sent_msgs and has_search and not has_xhs else None
+            if has_xhs and sent_msgs:
+                for _m in sent_msgs:
+                    try:
+                        await _m.delete()
+                    except Exception:
+                        pass
+                edit_msg = None
             await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages, edit_msg=edit_msg)
             self._schedule_proactive(channel_id, channel)
         except Exception as exc:  # noqa: BLE001
@@ -1696,6 +1755,24 @@ class DiscordBot:
         self._pending_reactions.setdefault(channel_id, []).append(reaction_text)
         self._maybe_schedule_typing_nudge(channel_id, channel)
 
+    async def _send_tts(self, text: str, channel: discord.abc.Messageable, *, emotion: str | None = None) -> None:
+        from app.infra.tts_client import synthesize
+        try:
+            audio = await synthesize(
+                text,
+                voice=self.settings.tts_voice,
+                api_key=self.settings.tts_api_key,
+                base_url=self.settings.tts_base_url,
+                model=self.settings.tts_model,
+                speed=self.settings.tts_speed,
+                emotion=emotion if emotion is not None else self.settings.tts_emotion,
+            )
+            if audio:
+                import io
+                await channel.send(file=discord.File(io.BytesIO(audio), filename="voice.mp3"))
+        except Exception:
+            pass
+
     async def _describe_attachments(self, message: discord.Message) -> list[str]:
         vision = self.reply_service.vision_client
         if not vision.available:
@@ -1749,7 +1826,7 @@ class DiscordBot:
         descriptions: list[str] = []
         for url in urls[:3]:
             try:
-                raw = await fetch_page_content(url)
+                raw = await asyncio.wait_for(fetch_page_content(url), timeout=35)
                 if not raw:
                     continue
                 descriptions.append(f"[链接内容: {raw}]")

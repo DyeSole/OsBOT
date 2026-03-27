@@ -9,22 +9,12 @@ from app.services.prompt_service import PromptService
 ALARM_TOOLS: list[dict[str, Any]] = [
     {
         "name": "set_timer",
-        "description": (
-            "仅当用户明确要求你设置闹钟或提醒时才使用此工具，其他任何情况都禁止调用。"
-            "时间单位为秒。例如想设 30 分钟就传 1800。"
-            "必须在 reason 中写明提醒内容，到期后你必须把这件事告诉用户，不可以沉默。"
-        ),
+        "description": "用户要求设闹钟/提醒时用。seconds单位秒。reason填提醒内容，到期必须告知用户。",
         "input_schema": {
             "type": "object",
             "properties": {
-                "seconds": {
-                    "type": "number",
-                    "description": "计时器时长（秒），不限范围。",
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "提醒内容。必填。",
-                },
+                "seconds": {"type": "number", "description": "秒数"},
+                "reason": {"type": "string", "description": "提醒内容"},
             },
             "required": ["seconds", "reason"],
         },
@@ -33,18 +23,11 @@ ALARM_TOOLS: list[dict[str, Any]] = [
 
 SEARCH_TOOL: dict[str, Any] = {
     "name": "web_search",
-    "description": (
-        "使用搜索引擎搜索互联网上的信息。"
-        "当你需要查找最新信息、不确定的事实、或用户明确要求你搜索时使用。"
-        "返回搜索结果列表，包含标题、链接和摘要。"
-    ),
+    "description": "搜索互联网。查最新信息或不确定事实时用。",
     "input_schema": {
         "type": "object",
         "properties": {
-            "query": {
-                "type": "string",
-                "description": "搜索关键词。",
-            },
+            "query": {"type": "string", "description": "关键词"},
         },
         "required": ["query"],
     },
@@ -52,18 +35,11 @@ SEARCH_TOOL: dict[str, Any] = {
 
 REACTION_TOOL: dict[str, Any] = {
     "name": "add_reaction",
-    "description": (
-        "给当前正在回复的那条用户 Discord 消息添加一个表情反应。"
-        "仅当一个简短表情比发文字更合适时使用。"
-        "emoji 传单个 Unicode 表情或 Discord 自定义表情字符串。"
-    ),
+    "description": "给用户消息加表情。表情胜过文字时用。",
     "input_schema": {
         "type": "object",
         "properties": {
-            "emoji": {
-                "type": "string",
-                "description": "要添加的表情，例如 ❤️、🥺、😂。",
-            },
+            "emoji": {"type": "string", "description": "表情符号"},
         },
         "required": ["emoji"],
     },
@@ -71,42 +47,80 @@ REACTION_TOOL: dict[str, Any] = {
 
 READ_COMMENTS_TOOL: dict[str, Any] = {
     "name": "read_comments",
-    "description": (
-        "读取链接的评论区。当用户分享了一个链接并且你想多看看评论、"
-        "或者用户让你看看评论区时使用。传入完整 URL。"
-    ),
+    "description": "读取链接评论区。",
     "input_schema": {
         "type": "object",
         "properties": {
-            "url": {
-                "type": "string",
-                "description": "要读取评论的链接 URL。",
-            },
+            "url": {"type": "string", "description": "完整URL"},
         },
         "required": ["url"],
     },
 }
 
-TIMER_TOOLS: list[dict[str, Any]] = [
-    {
-        "name": "set_timer",
-        "description": (
-            "设置一个计时器。计时器到期后你会收到通知，届时你可以选择对用户说话或保持沉默。"
-            "时间单位为秒。例如想设 30 分钟就传 1800。"
-            "如果用户明确要求你提醒他某件事，请在 reason 中写明提醒内容，"
-            "到期后你必须把这件事告诉用户，不可以沉默。"
-        ),
+
+SEARCH_BILIBILI_TOOL: dict[str, Any] = {
+    "name": "search_bilibili",
+    "description": "B站搜视频，返标题/播放量/时长/UP主/链接。搜完必须发链接给用户。",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "keyword": {"type": "string", "description": "关键词"},
+            "count": {"type": "integer", "minimum": 1, "maximum": 10},
+            "offset": {"type": "integer", "minimum": 0},
+        },
+        "required": ["keyword", "count"],
+    },
+}
+
+
+SEARCH_XHS_TOOL: dict[str, Any] = {
+    "name": "search_xiaohongshu",
+    "description": "小红书搜帖子，返标题/点赞数/链接。搜完必须发链接。最多连续5次翻页。",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "keyword": {"type": "string", "description": "关键词"},
+            "count": {"type": "integer", "minimum": 0, "maximum": 10},
+            "offset": {"type": "integer", "minimum": 0},
+        },
+        "required": ["keyword", "count"],
+    },
+}
+
+
+
+def _build_speak_tool() -> dict[str, Any]:
+    extra = _prompt_service.read_prompt("tts").strip()
+    desc = "文字转语音。撒娇/表白/道晚安等时机用，不要每条都用。text不带markdown/URL。"
+    if extra:
+        desc = desc + "\n\n" + extra
+    return {
+        "name": "speak",
+        "description": desc,
         "input_schema": {
             "type": "object",
             "properties": {
-                "seconds": {
-                    "type": "number",
-                    "description": "计时器时长（秒）。没有 reason 时范围为 120~7200（2分钟~2小时），有 reason 时不限。",
-                },
-                "reason": {
+                "text": {"type": "string", "description": "朗读文字，≤100字"},
+                "emotion": {
                     "type": "string",
-                    "description": "提醒内容。仅当用户明确要求你提醒/闹钟时才填写，其他任何情况都不要填这个字段。",
+                    "description": "情绪，不填用默认",
+                    "enum": ["happy", "sad", "angry", "calm", "surprised", "fearful"],
                 },
+            },
+            "required": ["text"],
+        },
+    }
+
+
+TIMER_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "set_timer",
+        "description": "设计时器，到期收通知可选说话或沉默。seconds单位秒，120~7200；有reason时到期必须告知用户。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "seconds": {"type": "number", "description": "秒数，120~7200；有reason时不限"},
+                "reason": {"type": "string", "description": "提醒内容，仅用户要求提醒时填"},
             },
             "required": ["seconds"],
         },
@@ -179,9 +193,10 @@ class ReplyService:
             return LLMResponse(text="哎，我字呢？")
 
         tools = TIMER_TOOLS if include_tools else ALARM_TOOLS
-        tools = tools + [REACTION_TOOL, READ_COMMENTS_TOOL]
+        tools = tools + [REACTION_TOOL, READ_COMMENTS_TOOL, SEARCH_BILIBILI_TOOL, SEARCH_XHS_TOOL]
         if include_search:
             tools = tools + [SEARCH_TOOL]
+        tools = tools + [_build_speak_tool()]
         return self.client.generate_with_tools(
             messages=messages,
             system_prompt=load_system_prompt(),
@@ -199,9 +214,10 @@ class ReplyService:
         if not messages:
             return LLMResponse(text="哎，我字呢？")
 
-        tools = (TIMER_TOOLS if include_tools else ALARM_TOOLS) + [REACTION_TOOL, READ_COMMENTS_TOOL]
+        tools = (TIMER_TOOLS if include_tools else ALARM_TOOLS) + [REACTION_TOOL, READ_COMMENTS_TOOL, SEARCH_BILIBILI_TOOL, SEARCH_XHS_TOOL]
         if include_search:
             tools = tools + [SEARCH_TOOL]
+        tools = tools + [_build_speak_tool()]
         return self.client.stream_with_tools(
             messages=messages,
             system_prompt=load_system_prompt(),

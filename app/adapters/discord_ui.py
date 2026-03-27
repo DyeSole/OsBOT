@@ -10,26 +10,6 @@ if TYPE_CHECKING:
     from app.adapters.discord_bot import DiscordBot
 
 
-class BrowserLoginModal(discord.ui.Modal, title="浏览器登录"):
-    def __init__(self, bot: DiscordBot):
-        super().__init__()
-        self.bot = bot
-        self.app = discord.ui.TextInput(
-            label="应用名称",
-            default="bilibili",
-            required=True,
-            max_length=80,
-            placeholder="如 bilibili、xiaohongshu",
-        )
-        self.add_item(self.app)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        await self.bot.handle_browser_login(
-            interaction,
-            app=self.app.value.strip(),
-        )
-
-
 class ApiConfigModal(discord.ui.Modal, title="聊天 API 配置"):
     def __init__(self, bot: DiscordBot):
         super().__init__()
@@ -593,23 +573,87 @@ class ProactiveToolboxView(discord.ui.View):
             view=ToolboxView(self.bot),
         )
 
+class CookieLoginModal(discord.ui.Modal, title="Cookie 登录"):
+    def __init__(self, bot: DiscordBot):
+        super().__init__()
+        self.bot = bot
+        self.profile = discord.ui.TextInput(
+            label="应用名称",
+            default="linuxdo",
+            required=True,
+            max_length=40,
+            placeholder="如 linuxdo",
+        )
+        self.domain = discord.ui.TextInput(
+            label="域名",
+            default="linux.do",
+            required=True,
+            max_length=100,
+            placeholder="如 linux.do",
+        )
+        self.cookies = discord.ui.TextInput(
+            label="Cookie（从浏览器开发者工具复制）",
+            required=True,
+            style=discord.TextStyle.long,
+            max_length=4000,
+            placeholder="_t=xxx; _forum_session=yyy（name=value; 格式）",
+        )
+        self.add_item(self.profile)
+        self.add_item(self.domain)
+        self.add_item(self.cookies)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        import json
+        from pathlib import Path
+        from app.infra.browser_client import AUTH_DIR
+
+        profile = self.profile.value.strip()
+        domain = self.domain.value.strip()
+        raw = self.cookies.value.strip()
+
+        cookies_list = []
+        for part in raw.split(";"):
+            part = part.strip()
+            if "=" not in part:
+                continue
+            name, _, value = part.partition("=")
+            cookies_list.append({
+                "name": name.strip(),
+                "value": value.strip(),
+                "domain": domain,
+                "path": "/",
+                "expires": -1,
+                "httpOnly": False,
+                "secure": True,
+                "sameSite": "Lax",
+            })
+
+        if not cookies_list:
+            await interaction.response.edit_message(
+                content="社交平台\n\n未解析到任何 Cookie，请检查格式。",
+                view=SocialToolboxView(self.bot),
+            )
+            return
+
+        AUTH_DIR.mkdir(parents=True, exist_ok=True)
+        state = {"cookies": cookies_list, "origins": []}
+        auth_path = AUTH_DIR / f"{profile}.json"
+        auth_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        await interaction.response.edit_message(
+            content=f"社交平台\n\n已保存 {profile} 登录态（{len(cookies_list)} 个 Cookie）-> {auth_path}",
+            view=SocialToolboxView(self.bot),
+        )
+
+
 
 class SocialToolboxView(discord.ui.View):
     def __init__(self, bot: DiscordBot):
         super().__init__(timeout=300)
         self.bot = bot
-
-    @discord.ui.button(label="浏览器登录", style=discord.ButtonStyle.primary)
-    async def browser_login(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(BrowserLoginModal(self.bot))
-
-    @discord.ui.button(label="登录态列表", style=discord.ButtonStyle.primary)
-    async def browser_profiles(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.edit_message(
-            content=self.bot.browser_profiles_text(),
-            view=SocialToolboxView(self.bot),
-        )
-
+    @discord.ui.button(label="Cookie 登录", style=discord.ButtonStyle.primary)
+    async def cookie_login(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(CookieLoginModal(self.bot))
     @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(
@@ -646,6 +690,69 @@ class ContextEntriesModal(discord.ui.Modal, title="上下文条数"):
             view=ChatControlView(self.bot),
         )
 
+
+
+class TtsConfigModal(discord.ui.Modal, title="语音配置"):
+    def __init__(self, bot: DiscordBot):
+        super().__init__()
+        self.bot = bot
+        env_values = read_env_values()
+        current = bot.settings
+        self.api_key = discord.ui.TextInput(
+            label="密钥（MiniMax，留空用 edge-tts）",
+            default=env_values.get("TTS_API_KEY", current.tts_api_key),
+            required=False,
+            max_length=300,
+            placeholder="sk-...（MiniMax API Key）",
+        )
+        self.base_url = discord.ui.TextInput(
+            label="API URL（留空用默认）",
+            default=env_values.get("TTS_BASE_URL", current.tts_base_url),
+            required=False,
+            max_length=200,
+            placeholder="https://api.minimax.chat/v1/t2a_v2",
+        )
+        self.voice = discord.ui.TextInput(
+            label="声音 ID",
+            default=env_values.get("TTS_VOICE", current.tts_voice),
+            required=False,
+            max_length=80,
+            placeholder="Casual_Guy / female-shaonv / zh-CN-XiaoyiNeural",
+        )
+        self.speed = discord.ui.TextInput(
+            label="语速（默认 1.0）",
+            default=env_values.get("TTS_SPEED", str(current.tts_speed)),
+            required=False,
+            max_length=10,
+            placeholder="0.5 ~ 2.0",
+        )
+        self.prompt = discord.ui.TextInput(
+            label="提示词",
+            default=bot.prompt_service.read_prompt("tts")[:4000],
+            required=False,
+            style=discord.TextStyle.long,
+            max_length=4000,
+            placeholder="语音风格提示，例如停顿标记 [0.5s]、(breath) 等",
+        )
+        self.add_item(self.api_key)
+        self.add_item(self.base_url)
+        self.add_item(self.voice)
+        self.add_item(self.speed)
+        self.add_item(self.prompt)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        update_env_values({
+            "TTS_API_KEY": self.api_key.value.strip(),
+            "TTS_BASE_URL": self.base_url.value.strip(),
+            "TTS_VOICE": self.voice.value.strip(),
+            "TTS_SPEED": self.speed.value.strip(),
+        })
+        self.bot.prompt_service.write_prompt(target="tts", content=self.prompt.value)
+        await self.bot.reload_settings_if_needed()
+        await interaction.response.edit_message(
+            content="聊天控制\n\n语音配置已保存。",
+            view=ChatControlView(self.bot),
+        )
 
 class ChatControlView(discord.ui.View):
     def __init__(self, bot: DiscordBot):
@@ -690,6 +797,10 @@ class ChatControlView(discord.ui.View):
             content=f"聊天控制\n\n已切换为{label}",
             view=ChatControlView(self.bot),
         )
+
+    @discord.ui.button(label="语音配置", style=discord.ButtonStyle.secondary)
+    async def tts_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(TtsConfigModal(self.bot))
 
     @discord.ui.button(label="上下文条数", style=discord.ButtonStyle.secondary)
     async def context_entries(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

@@ -33,7 +33,10 @@ class ContextBuilder:
     def estimate_tokens(text: str) -> int:
         if not text:
             return 0
-        return max(1, len(text) // 4)
+        # Chinese chars ~1.5 tokens each, ASCII/space ~0.25 tokens each
+        cjk = sum(1 for c in text if "\u4e00" <= c <= "\u9fff" or "\u3400" <= c <= "\u4dbf")
+        other = len(text) - cjk
+        return max(1, int(cjk * 1.5 + other * 0.25))
 
     def _render_summary_block(self, *, channel_id: int) -> str:
         segments = self.compression_store.load_segments(channel_id=channel_id)

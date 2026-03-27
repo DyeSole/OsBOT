@@ -15,6 +15,7 @@ PROMPT_TARGETS = {
     "jealousy": PROMPTS_DIR / "jealousy.txt",
     "typing_nudge": PROMPTS_DIR / "typing_nudge.txt",
     "vision_describe": PROMPTS_DIR / "vision_describe.txt",
+    "tts": PROMPTS_DIR / "tts.txt",
 }
 
 

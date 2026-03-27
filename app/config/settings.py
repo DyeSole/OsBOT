@@ -47,6 +47,13 @@ class Settings:
     compression_base_url: str = ""
     compression_api_key: str = ""
     compression_model: str = ""
+    tts_enabled: bool = False
+    tts_voice: str = "zh-CN-XiaoyiNeural"
+    tts_api_key: str = ""
+    tts_base_url: str = ""
+    tts_model: str = "speech-02-hd"
+    tts_speed: float = 1.0
+    tts_emotion: str = ""
 
     def __post_init__(self) -> None:
         if self.watch_user_ids is None:
@@ -136,6 +143,13 @@ def load_settings() -> Settings:
     compression_base_url = _env_value("COMPRESSION_BASE_URL", env_file, "").strip()
     compression_api_key = _env_value("COMPRESSION_API_KEY", env_file, "").strip()
     compression_model = _env_value("COMPRESSION_MODEL", env_file, "").strip()
+    tts_enabled = _env_bool("TTS_ENABLED", env_file, False)
+    tts_voice = _env_value("TTS_VOICE", env_file, "zh-CN-XiaoyiNeural").strip() or "zh-CN-XiaoyiNeural"
+    tts_api_key = _env_value("TTS_API_KEY", env_file, "").strip()
+    tts_base_url = _env_value("TTS_BASE_URL", env_file, "").strip()
+    tts_model = _env_value("TTS_MODEL", env_file, "speech-02-hd").strip() or "speech-02-hd"
+    tts_speed = float(_env_value("TTS_SPEED", env_file, "1.0").strip() or "1.0")
+    tts_emotion = _env_value("TTS_EMOTION", env_file, "").strip()
 
     return Settings(
         bot_key=bot_key,
@@ -173,6 +187,13 @@ def load_settings() -> Settings:
         compression_base_url=compression_base_url,
         compression_api_key=compression_api_key,
         compression_model=compression_model,
+        tts_enabled=tts_enabled,
+        tts_voice=tts_voice,
+        tts_api_key=tts_api_key,
+        tts_base_url=tts_base_url,
+        tts_model=tts_model,
+        tts_speed=tts_speed,
+        tts_emotion=tts_emotion,
     )
 
 
