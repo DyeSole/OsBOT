@@ -62,7 +62,7 @@ def synthesize(
 
         hex_audio = data.get("data", {}).get("audio", "")
         if not hex_audio:
-            log.warning("tts: empty audio in response")
+            log.warning("tts: empty audio in response: %s", str(data)[:500])
             return None
         return bytes.fromhex(hex_audio)
     except Exception:
