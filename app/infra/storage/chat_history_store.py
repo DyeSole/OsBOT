@@ -38,34 +38,15 @@ class ChatHistoryStore:
         return self._read_jsonl_entries(self._history_path(channel_id))
 
     def load_entries_after_marker(self, *, channel_id: int) -> list[dict[str, str]]:
-        path = self._history_path(channel_id)
-        if not path.exists():
-            return []
-
-        all_lines = path.read_text(encoding="utf-8").splitlines()
+        rows = self._read_jsonl_rows(self._history_path(channel_id))
         last_marker = -1
-        for i, raw in enumerate(all_lines):
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                row = json.loads(raw)
-            except Exception:
-                continue
-            if isinstance(row, dict) and row.get("__compressed__"):
+        for i, row in enumerate(rows):
+            if row.get("__compressed__"):
                 last_marker = i
 
         entries: list[dict[str, str]] = []
-        start = last_marker + 1 if last_marker >= 0 else 0
-        for raw in all_lines[start:]:
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                row = json.loads(raw)
-            except Exception:
-                continue
-            if not isinstance(row, dict) or row.get("__compressed__"):
+        for row in rows[last_marker + 1:]:
+            if row.get("__compressed__"):
                 continue
             entry = self._parse_entry(row)
             if entry:
@@ -108,11 +89,11 @@ class ChatHistoryStore:
         }
 
     @staticmethod
-    def _read_jsonl_entries(path: Path) -> list[dict[str, str]]:
+    def _read_jsonl_rows(path: Path) -> list[dict]:
+        """Read a JSONL file and return all parsed dicts (skipping blanks and bad lines)."""
         if not path.exists():
             return []
-
-        entries: list[dict[str, str]] = []
+        rows: list[dict] = []
         for raw in path.read_text(encoding="utf-8").splitlines():
             raw = raw.strip()
             if not raw:
@@ -121,31 +102,24 @@ class ChatHistoryStore:
                 row = json.loads(raw)
             except Exception:
                 continue
-            if not isinstance(row, dict) or row.get("__compressed__"):
+            if isinstance(row, dict):
+                rows.append(row)
+        return rows
+
+    @classmethod
+    def _read_jsonl_entries(cls, path: Path) -> list[dict[str, str]]:
+        entries: list[dict[str, str]] = []
+        for row in cls._read_jsonl_rows(path):
+            if row.get("__compressed__"):
                 continue
-            role = row.get("role")
-            username = row.get("username")
-            timestamp = row.get("time")
-            content = row.get("content")
-            if not isinstance(role, str) or not isinstance(username, str) or not isinstance(timestamp, str) or not isinstance(content, str):
-                continue
-            entries.append(
-                {
-                    "role": role,
-                    "username": username,
-                    "time": timestamp,
-                    "content": content,
-                }
-            )
+            entry = cls._parse_entry(row)
+            if entry:
+                entries.append(entry)
         return entries
 
-    def pop_last_by_role(self, *, channel_id: int, role: str) -> dict[str, str] | None:
-        path = self._history_path(channel_id)
-        if not path.exists():
-            return None
-        lines = path.read_text(encoding="utf-8").splitlines()
-        target_idx = -1
-        target_entry: dict[str, str] | None = None
+    @staticmethod
+    def _find_last_line_by_role(lines: list[str], role: str) -> tuple[int, dict | None]:
+        """Return (index, parsed_row) of the last line matching role, or (-1, None)."""
         for i in range(len(lines) - 1, -1, -1):
             raw = lines[i].strip()
             if not raw:
@@ -155,14 +129,20 @@ class ChatHistoryStore:
             except Exception:
                 continue
             if isinstance(row, dict) and row.get("role") == role:
-                target_idx = i
-                target_entry = row
-                break
-        if target_idx < 0:
+                return i, row
+        return -1, None
+
+    def pop_last_by_role(self, *, channel_id: int, role: str) -> dict[str, str] | None:
+        path = self._history_path(channel_id)
+        if not path.exists():
             return None
-        del lines[target_idx]
+        lines = path.read_text(encoding="utf-8").splitlines()
+        idx, entry = self._find_last_line_by_role(lines, role)
+        if idx < 0:
+            return None
+        del lines[idx]
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return target_entry
+        return entry
 
     def replace_last_by_role(
         self, *, channel_id: int, role: str, new_content: str,
@@ -172,20 +152,13 @@ class ChatHistoryStore:
         if not path.exists():
             return False
         lines = path.read_text(encoding="utf-8").splitlines()
-        for i in range(len(lines) - 1, -1, -1):
-            raw = lines[i].strip()
-            if not raw:
-                continue
-            try:
-                row = json.loads(raw)
-            except Exception:
-                continue
-            if isinstance(row, dict) and row.get("role") == role:
-                row["content"] = new_content
-                lines[i] = json.dumps(row, ensure_ascii=False)
-                path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-                return True
-        return False
+        idx, row = self._find_last_line_by_role(lines, role)
+        if idx < 0:
+            return False
+        row["content"] = new_content
+        lines[idx] = json.dumps(row, ensure_ascii=False)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return True
 
     def delete_channel(self, channel_id: int) -> bool:
         """Delete history file for a channel. Returns True if a file was removed."""

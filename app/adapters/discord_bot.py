@@ -6,7 +6,7 @@ import queue as _queue
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, time as dt_time
+from datetime import timedelta, time as dt_time
 
 from app.core.clock import now as _now, now_clock as _now_clock_util
 
@@ -241,6 +241,20 @@ class DiscordBot:
     @staticmethod
     def _now_clock() -> str:
         return _now_clock_util()
+
+    def _save_entry(
+        self, channel_id: int, role: str, username: str, content: str, *, at: str = "",
+    ) -> None:
+        self.history_store.append_entry(
+            channel_id=channel_id,
+            role=role,
+            username=username,
+            time=at or self._now_clock(),
+            content=content,
+        )
+
+    def _save_bot_reply(self, channel_id: int, content: str) -> None:
+        self._save_entry(channel_id, "assistant", self.settings.bot_key, content)
 
     def _typing_probe_enabled(self) -> bool:
         return self.settings.app_mode == "debug" and self.settings.show_interaction_logs
@@ -536,13 +550,7 @@ class DiscordBot:
         if not transcript:
             self.logger.error("LOGIC", "empty transcript, skip api request")
             return
-        self.history_store.append_entry(
-            channel_id=channel_id,
-            role="user",
-            username=pending.user_label,
-            time=pending.first_time,
-            content=merged_text,
-        )
+        self._save_entry(channel_id, "user", pending.user_label, merged_text, at=pending.first_time)
         if self.settings.show_api_payload:
             self.logger.info(f"📨 api_payload\n{transcript}")
         messages = [{"role": "user", "content": transcript}]
@@ -561,13 +569,7 @@ class DiscordBot:
             reply = (response.text or "").strip()
             has_search = any(tc.name == "web_search" for tc in response.tool_calls)
             if reply and not has_search:
-                self.history_store.append_entry(
-                    channel_id=channel_id,
-                    role="assistant",
-                    username=self.settings.bot_key,
-                    time=self._now_clock(),
-                    content=reply,
-                )
+                self._save_bot_reply(channel_id, reply)
             self._log_typing(
                 f"🚀 api_sent user={pending.user_label} chunks={len(pending.chunks)} merged_len={len(merged_text)}"
             )
@@ -611,13 +613,7 @@ class DiscordBot:
         if not transcript:
             self.logger.error("LOGIC", "empty transcript, skip api request")
             return
-        self.history_store.append_entry(
-            channel_id=channel_id,
-            role="user",
-            username=user_label,
-            time=now_clock,
-            content=text,
-        )
+        self._save_entry(channel_id, "user", user_label, text, at=now_clock)
         if self.settings.show_api_payload:
             self.logger.info(f"📨 api_payload\n{transcript}")
         messages = [{"role": "user", "content": transcript}]
@@ -632,13 +628,7 @@ class DiscordBot:
             reply = (response.text or "").strip()
             has_search = any(tc.name == "web_search" for tc in response.tool_calls)
             if reply and not has_search:
-                self.history_store.append_entry(
-                    channel_id=channel_id,
-                    role="assistant",
-                    username=self.settings.bot_key,
-                    time=self._now_clock(),
-                    content=reply,
-                )
+                self._save_bot_reply(channel_id, reply)
             edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
             await self._handle_tool_calls(
                 response,
@@ -703,13 +693,7 @@ class DiscordBot:
                 confirm = f"⏰ 好的，{time_str}后提醒你：{reason}" if reason else f"⏰ 好的，{time_str}后提醒你"
                 try:
                     await channel.send(confirm, allowed_mentions=AllowedMentions.none())
-                    self.history_store.append_entry(
-                        channel_id=channel_id,
-                        role="assistant",
-                        username=self.settings.bot_key,
-                        time=self._now_clock(),
-                        content=confirm,
-                    )
+                    self._save_bot_reply(channel_id, confirm)
                 except Exception:  # noqa: BLE001
                     pass
         for tc in response.tool_calls:
@@ -831,13 +815,7 @@ class DiscordBot:
                         await self._reply_by_sentence(None, reply, channel=channel)
                 else:
                     await self._reply_by_sentence(None, reply, channel=channel)
-                self.history_store.append_entry(
-                    channel_id=channel_id,
-                    role="assistant",
-                    username=self.settings.bot_key,
-                    time=self._now_clock(),
-                    content=reply,
-                )
+                self._save_bot_reply(channel_id, reply)
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send search reply", exc=exc)
 
@@ -932,13 +910,7 @@ class DiscordBot:
         if reply and "[SILENT]" not in reply:
             try:
                 await self._reply_by_sentence(None, reply, channel=channel)
-                self.history_store.append_entry(
-                    channel_id=channel_id,
-                    role="assistant",
-                    username=self.settings.bot_key,
-                    time=self._now_clock(),
-                    content=reply,
-                )
+                self._save_bot_reply(channel_id, reply)
                 self._log_typing(f"⏰ timer_sent ch={channel_id} reply={reply}")
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send variable timer message", exc=exc)
@@ -1003,13 +975,7 @@ class DiscordBot:
         if reply:
             try:
                 await self._reply_by_sentence(None, reply, channel=channel)
-                self.history_store.append_entry(
-                    channel_id=channel_id,
-                    role="assistant",
-                    username=self.settings.bot_key,
-                    time=self._now_clock(),
-                    content=reply,
-                )
+                self._save_bot_reply(channel_id, reply)
                 self._log_typing(f"⏰ alarm_sent ch={channel_id} reason={reason} reply={reply}")
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send alarm message", exc=exc)
@@ -1118,13 +1084,7 @@ class DiscordBot:
             if reply:
                 try:
                     await self._reply_by_sentence(None, reply, channel=channel)
-                    self.history_store.append_entry(
-                        channel_id=channel_id,
-                        role="assistant",
-                        username=self.settings.bot_key,
-                        time=self._now_clock(),
-                        content=reply,
-                    )
+                    self._save_bot_reply(channel_id, reply)
                     self._log_typing(f"🌅 morning ch={channel_id} alarms={len(reasons)}")
                 except Exception as exc:  # noqa: BLE001
                     self.logger.error("UNKNOWN", "failed to send morning message", exc=exc)
@@ -1208,13 +1168,7 @@ class DiscordBot:
             reply = (response.text or "").strip()
             has_search = any(tc.name == "web_search" for tc in response.tool_calls)
             if reply and not has_search:
-                self.history_store.append_entry(
-                    channel_id=channel_id,
-                    role="assistant",
-                    username=self.settings.bot_key,
-                    time=self._now_clock(),
-                    content=reply,
-                )
+                self._save_bot_reply(channel_id, reply)
             edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
             await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages, edit_msg=edit_msg)
             self._schedule_proactive(channel_id, channel)
@@ -1341,13 +1295,7 @@ class DiscordBot:
         if reply and "[SILENT]" not in reply:
             try:
                 await self._reply_by_sentence(None, reply, channel=channel)
-                self.history_store.append_entry(
-                    channel_id=channel_id,
-                    role="assistant",
-                    username=self.settings.bot_key,
-                    time=self._now_clock(),
-                    content=reply,
-                )
+                self._save_bot_reply(channel_id, reply)
                 self.logger.info(f"👁️ watch_idle_sent user={user_id} ch={channel_id}")
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send watch idle message", exc=exc)
@@ -1465,13 +1413,7 @@ class DiscordBot:
         if reply and "[SILENT]" not in reply:
             try:
                 await self._reply_by_sentence(None, reply, channel=channel)
-                self.history_store.append_entry(
-                    channel_id=channel_id,
-                    role="assistant",
-                    username=self.settings.bot_key,
-                    time=self._now_clock(),
-                    content=reply,
-                )
+                self._save_bot_reply(channel_id, reply)
                 self.logger.info(
                     f"🏷️ jealousy_sent user={user_id} ch={channel_id} msg_count={count}"
                     f" | prompt={jealousy_note}"
