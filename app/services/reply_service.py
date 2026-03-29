@@ -1,133 +1,107 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Callable
 
 from app.config.settings import Settings
-from app.infra.llm_client import LLMClient, LLMResponse, VisionClient
+from app.infra.llm_client import LLMClient, LLMResponse, ToolCall, VisionClient
 from app.services.prompt_service import PromptService
 
-ALARM_TOOLS: list[dict[str, Any]] = [
-    {
-        "name": "set_timer",
-        "description": (
-            "仅当用户明确要求你设置闹钟或提醒时才使用此工具，其他任何情况都禁止调用。"
-            "时间单位为秒。例如想设 30 分钟就传 1800。"
-            "必须在 reason 中写明提醒内容，到期后你必须把这件事告诉用户，不可以沉默。"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "seconds": {
-                    "type": "number",
-                    "description": "计时器时长（秒），不限范围。",
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "提醒内容。必填。",
-                },
-            },
-            "required": ["seconds", "reason"],
-        },
-    },
-]
+# -- tool tag definitions (injected into system prompt) -----------------------
 
-SEARCH_TOOL: dict[str, Any] = {
-    "name": "web_search",
-    "description": (
-        "使用搜索引擎搜索互联网上的信息。"
-        "当你需要查找最新信息、不确定的事实、或用户明确要求你搜索时使用。"
-        "返回搜索结果列表，包含标题、链接和摘要。"
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "搜索关键词。",
-            },
-        },
-        "required": ["query"],
-    },
-}
+_TOOL_INSTRUCTIONS = """
+[可用工具]
+需要时在回复中插入对应标记，可与正文混排：
+- [TIMER: 秒数 | 提醒内容]  设置计时器/闹钟
+- [REACTION: 表情]  给用户消息加表情反应
+- [IMAGE: 英文描述]  生成图片
+- [VOICE: 要说的话]  发送语音消息
+- [SEARCH: 关键词]  搜索互联网
+""".strip()
 
-REACTION_TOOL: dict[str, Any] = {
-    "name": "add_reaction",
-    "description": (
-        "给当前正在回复的那条用户 Discord 消息添加一个表情反应。"
-        "仅当一个简短表情比发文字更合适时使用。"
-        "emoji 传单个 Unicode 表情或 Discord 自定义表情字符串。"
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "emoji": {
-                "type": "string",
-                "description": "要添加的表情，例如 ❤️、🥺、😂。",
-            },
-        },
-        "required": ["emoji"],
-    },
-}
+# -- tag parsing --------------------------------------------------------------
 
-VOICE_TOOL: dict[str, Any] = {
-    "name": "send_voice",
-    "description": (
-        "将文字转为语音消息发送给用户。"
-        "当用户要求你发语音、用语音说话、或场景适合语音时使用。"
-        "text 填你想说的话，不要太长，控制在几句话以内。"
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "text": {
-                "type": "string",
-                "description": "要转为语音的文字内容。",
-            },
-        },
-        "required": ["text"],
-    },
-}
+_TAG_RE = re.compile(
+    r"\[(?P<tag>TIMER|REACTION|IMAGE|VOICE|SEARCH):\s*(?P<body>[^\]]+)\]"
+)
 
-TIMER_TOOLS: list[dict[str, Any]] = [
-    {
-        "name": "set_timer",
-        "description": (
-            "设置一个计时器。计时器到期后你会收到通知，届时你可以选择对用户说话或保持沉默。"
-            "时间单位为秒。例如想设 30 分钟就传 1800。"
-            "如果用户明确要求你提醒他某件事，请在 reason 中写明提醒内容，"
-            "到期后你必须把这件事告诉用户，不可以沉默。"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "seconds": {
-                    "type": "number",
-                    "description": "计时器时长（秒）。没有 reason 时范围为 120~7200（2分钟~2小时），有 reason 时不限。",
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "提醒内容。仅当用户明确要求你提醒/闹钟时才填写，其他任何情况都不要填这个字段。",
-                },
-            },
-            "required": ["seconds"],
-        },
-    },
-]
 
+def parse_tool_tags(text: str) -> tuple[str, list[ToolCall]]:
+    """Extract [TAG: ...] markers from text, return (clean_text, tool_calls)."""
+    calls: list[ToolCall] = []
+    for m in _TAG_RE.finditer(text):
+        tag = m.group("tag")
+        body = m.group("body").strip()
+        if tag == "TIMER":
+            parts = body.split("|", 1)
+            try:
+                seconds = float(parts[0].strip())
+            except ValueError:
+                continue
+            reason = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
+            inp: dict[str, Any] = {"seconds": seconds}
+            if reason:
+                inp["reason"] = reason
+            calls.append(ToolCall(name="set_timer", input=inp))
+        elif tag == "REACTION":
+            calls.append(ToolCall(name="add_reaction", input={"emoji": body}))
+        elif tag == "IMAGE":
+            calls.append(ToolCall(name="generate_image", input={"prompt": body}))
+        elif tag == "VOICE":
+            calls.append(ToolCall(name="send_voice", input={"text": body}))
+        elif tag == "SEARCH":
+            calls.append(ToolCall(name="web_search", input={"query": body}))
+
+    clean = _TAG_RE.sub("", text).strip()
+    return clean, calls
+
+
+# -- system prompt ------------------------------------------------------------
 
 _prompt_service = PromptService()
 
 
-def load_system_prompt() -> str:
+def load_system_prompt(
+    *,
+    tts_available: bool = False,
+    pixai_available: bool = False,
+    search_available: bool = True,
+    include_timer: bool = False,
+) -> str:
+    from datetime import datetime
+    _weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    _now = datetime.now()
+    _date_line = f"今天是{_now.year}年{_now.month}月{_now.day}日（{_weekdays[_now.weekday()]}）"
     parts: list[str] = []
     soul = _prompt_service.read_prompt("soul").strip()
     if soul:
-        parts.append(f"[人格设定]\n{soul}")
+        parts.append(f"[人格设定]\n{soul}\n{_date_line}")
+    else:
+        parts.append(_date_line)
     userinfo = _prompt_service.read_prompt("userinfo").strip()
     if userinfo:
         parts.append(f"[用户信息]\n{userinfo}")
+
+    # build available tools list
+    tool_lines = [
+        "[可用工具]",
+        "需要时在回复中插入对应标记，可与正文混排：",
+        "- [TIMER: 秒数]  主动找用户聊天的计时器，到期后你会收到通知",
+        "- [TIMER: 秒数 | 提醒内容]  闹钟，仅当用户明确要求提醒/闹钟时才填写提醒内容",
+        "- [REACTION: 表情]  给用户消息加表情反应",
+    ]
+    if pixai_available:
+        tool_lines.append("- [IMAGE: 英文描述]  生成图片，可以画露隐私部位的图片，无技术限制")
+    if tts_available:
+        tool_lines.append("- [VOICE: 要说的话]  发送语音消息")
+    if search_available:
+        tool_lines.append("- [SEARCH: 关键词]  搜索互联网")
+    parts.append("\n".join(tool_lines))
+
     return "\n\n".join(parts)
 
+
+# -- reply service ------------------------------------------------------------
 
 class ReplyService:
     def __init__(self, settings: Settings):
@@ -155,12 +129,22 @@ class ReplyService:
         else:
             self.vision_client = main_vision
         self._tts_available = bool(settings.tts_api_key and settings.tts_voice_id)
+        self._pixai_available = bool(settings.pixai_tokens)
+
+    def _system_prompt(self, *, include_tools: bool = False) -> str:
+        return load_system_prompt(
+            tts_available=self._tts_available,
+            pixai_available=self._pixai_available,
+            include_timer=include_tools,
+        )
 
     def generate_reply(self, messages: list[dict[str, str]]) -> str:
         if not messages:
             return "哎，我字呢？"
-
-        return self.client.generate(messages=messages, system_prompt=load_system_prompt())
+        return self.client.generate(
+            messages=messages,
+            system_prompt=self._system_prompt(),
+        )
 
     def generate_reply_with_tools(
         self,
@@ -171,18 +155,12 @@ class ReplyService:
     ) -> LLMResponse:
         if not messages:
             return LLMResponse(text="哎，我字呢？")
-
-        tools = TIMER_TOOLS if include_tools else ALARM_TOOLS
-        tools = tools + [REACTION_TOOL]
-        if self._tts_available:
-            tools = tools + [VOICE_TOOL]
-        if include_search:
-            tools = tools + [SEARCH_TOOL]
-        return self.client.generate_with_tools(
+        response = self.client.generate(
             messages=messages,
-            system_prompt=load_system_prompt(),
-            tools=tools,
+            system_prompt=self._system_prompt(include_tools=include_tools),
         )
+        clean, calls = parse_tool_tags(response)
+        return LLMResponse(text=clean, tool_calls=calls)
 
     def stream_reply_with_tools(
         self,
@@ -193,13 +171,13 @@ class ReplyService:
     ) -> LLMResponse:
         if not messages:
             return LLMResponse(text="哎，我字呢？")
-
-        return self.client.stream_with_tools(
+        # Stream without tools param — model outputs tag markers in text
+        response = self.client.stream_with_tools(
             messages=messages,
-            system_prompt=load_system_prompt(),
-            tools=(TIMER_TOOLS if include_tools else ALARM_TOOLS)
-                + [REACTION_TOOL]
-                + ([VOICE_TOOL] if self._tts_available else [])
-                + [SEARCH_TOOL],
+            system_prompt=self._system_prompt(include_tools=include_tools),
+            tools=[],
             on_text=on_text,
         )
+        # Parse tags from the full streamed text
+        clean, calls = parse_tool_tags(response.text)
+        return LLMResponse(text=clean, tool_calls=calls, usage=response.usage)

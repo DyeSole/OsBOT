@@ -19,6 +19,7 @@ from app.services.reply_service import ReplyService
 from app.adapters.discord_ui import ToolboxView
 from app.adapters.discord_dispatch import DispatchMixin
 from app.adapters.discord_proactive import ProactiveMixin
+from app.infra.pixai_client import PixAIClient
 
 
 class DiscordBot(DispatchMixin, ProactiveMixin):
@@ -41,6 +42,7 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
             history_store=self.history_store,
             compression_store=self.compression_store,
         )
+        self.pixai_client = PixAIClient(settings.pixai_tokens)
         self.prompt_service = PromptService()
         self.context_builder = ContextBuilder(self.history_store, self.compression_store)
         self.proactive_idle_seconds = settings.proactive_idle_seconds
@@ -95,6 +97,17 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
     def _register_app_commands(self) -> None:
         @self.tree.command(name="工具箱", description="打开工具箱")
         async def toolbox(interaction: discord.Interaction) -> None:
+            allowed_ids = self.settings.watch_user_ids
+            if allowed_ids and str(interaction.user.id) not in allowed_ids:
+                embed = discord.Embed(
+                    title="⛔ 没有权限",
+                    description="你没有权限使用工具箱。",
+                    color=discord.Color.red(),
+                )
+                await interaction.response.send_message(
+                    embed=embed, ephemeral=True,
+                )
+                return
             await interaction.response.send_message(
                 "工具箱",
                 view=ToolboxView(self),
@@ -155,6 +168,7 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
         old_token = self.settings.discord_bot_token
         self.settings = settings
         self.reply_service.apply_settings(settings)
+        self.pixai_client.set_tokens(settings.pixai_tokens)
         self.compression_service.apply_settings(settings)
         self.logger.bot_key = settings.bot_key
         self.logger.mode = settings.app_mode
@@ -418,6 +432,14 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
         await self.reload_settings_if_needed()
         if message.author.bot:
             return
+        if message.type not in (discord.MessageType.default, discord.MessageType.reply):
+            return
+
+        # DM 只允许 watch_user_ids 里的用户
+        if isinstance(message.channel, discord.DMChannel):
+            allowed_ids = self.settings.watch_user_ids
+            if allowed_ids and str(message.author.id) not in allowed_ids:
+                return
 
         text = (message.content or "").strip()
         if not text and message.stickers:

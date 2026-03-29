@@ -45,7 +45,6 @@ class Settings:
     vision_base_url: str = ""
     vision_api_key: str = ""
     vision_model: str = ""
-    vision_prompt: str = ""
     compression_base_url: str = ""
     compression_api_key: str = ""
     compression_model: str = ""
@@ -54,12 +53,15 @@ class Settings:
     tts_speed: float = 1.0
     tts_pitch: int = 0
     tts_emotion: str = ""
+    pixai_tokens: list[str] = None
 
     def __post_init__(self) -> None:
         if self.watch_user_ids is None:
             self.watch_user_ids = []
         if self.jealousy_channel_ids is None:
             self.jealousy_channel_ids = []
+        if self.pixai_tokens is None:
+            self.pixai_tokens = []
 
 
 # -- file I/O ----------------------------------------------------------------
@@ -164,7 +166,6 @@ def load_settings() -> Settings:
     vision_base_url = _env_value("VISION_BASE_URL", merged, "").strip()
     vision_api_key = _env_value("VISION_API_KEY", merged, "").strip()
     vision_model = _env_value("VISION_MODEL", merged, "").strip()
-    vision_prompt = _env_value("VISION_PROMPT", merged, "").strip()
 
     compression_base_url = _env_value("COMPRESSION_BASE_URL", merged, "").strip()
     compression_api_key = _env_value("COMPRESSION_API_KEY", merged, "").strip()
@@ -175,6 +176,9 @@ def load_settings() -> Settings:
     tts_speed = float(_env_value("TTS_SPEED", merged, "1.0").strip() or "1.0")
     tts_pitch = int(_env_value("TTS_PITCH", merged, "0").strip() or "0")
     tts_emotion = _env_value("TTS_EMOTION", merged, "").strip()
+
+    raw_pixai = _env_value("PIXAI_TOKENS", merged, "").strip()
+    pixai_tokens = [t.strip() for t in raw_pixai.split(",") if t.strip()] if raw_pixai else []
 
     return Settings(
         bot_key=bot_key,
@@ -208,7 +212,6 @@ def load_settings() -> Settings:
         vision_base_url=vision_base_url,
         vision_api_key=vision_api_key,
         vision_model=vision_model,
-        vision_prompt=vision_prompt,
         compression_base_url=compression_base_url,
         compression_api_key=compression_api_key,
         compression_model=compression_model,
@@ -217,6 +220,7 @@ def load_settings() -> Settings:
         tts_speed=max(0.5, min(2.0, tts_speed)),
         tts_pitch=max(-12, min(12, tts_pitch)),
         tts_emotion=tts_emotion,
+        pixai_tokens=pixai_tokens,
     )
 
 

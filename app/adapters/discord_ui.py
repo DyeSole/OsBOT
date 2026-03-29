@@ -101,13 +101,6 @@ CHAT_API_FIELDS = [
     FieldDef("MODEL", "MODEL", max_length=120),
 ]
 
-VISION_API_FIELDS = [
-    FieldDef("VISION_BASE_URL", "VISION_BASE_URL", required=False, placeholder="留空则使用聊天 API 的 BASE_URL"),
-    FieldDef("VISION_API_KEY", "VISION_API_KEY", required=False, placeholder="留空则使用聊天 API 的 API_KEY"),
-    FieldDef("VISION_MODEL", "VISION_MODEL", required=False, max_length=120, placeholder="留空则使用聊天 API 的 MODEL"),
-    FieldDef("VISION_PROMPT", "VISION_PROMPT（识图系统提示词）", required=False, max_length=800,
-             placeholder="留空则不传 system prompt", style=discord.TextStyle.paragraph),
-]
 
 SEARCH_API_FIELDS = [
     FieldDef("SEARCH_BASE_URL", "SEARCH_BASE_URL", required=False, placeholder="留空则使用 DuckDuckGo"),
@@ -128,6 +121,8 @@ TTS_FIELDS = [
     FieldDef("TTS_PITCH", "音调（-12~12，默认 0）", required=False, max_length=4, placeholder="0"),
     FieldDef("TTS_EMOTION", "情绪（happy/sad/angry/neutral 等）", required=False, max_length=20, placeholder="留空则不设"),
 ]
+
+PIXAI_FIELDS: list[FieldDef] = []  # replaced by PixAITokenModal
 
 QUIET_HOURS_FIELDS = [
     FieldDef("QUIET_ENABLED", "开关（1=开启 0=关闭）", max_length=1),
@@ -240,6 +235,138 @@ class ProactiveModal(discord.ui.Modal, title="聊天主动设置"):
         )
 
 
+class CompressionModal(discord.ui.Modal, title="压缩 API 配置"):
+    def __init__(self, bot: DiscordBot):
+        super().__init__()
+        self.bot = bot
+        s = bot.settings
+        self.base_url = discord.ui.TextInput(
+            label="COMPRESSION_BASE_URL",
+            default=s.compression_base_url or "",
+            required=False, placeholder="留空则使用聊天 API",
+        )
+        self.add_item(self.base_url)
+        self.api_key = discord.ui.TextInput(
+            label="COMPRESSION_API_KEY",
+            default=s.compression_api_key or "",
+            required=False, placeholder="留空则使用聊天 API",
+        )
+        self.add_item(self.api_key)
+        self.model = discord.ui.TextInput(
+            label="COMPRESSION_MODEL",
+            default=s.compression_model or "",
+            required=False, max_length=120, placeholder="留空则使用聊天 API",
+        )
+        self.add_item(self.model)
+        self.compression_prompt = discord.ui.TextInput(
+            label="压缩提示词",
+            style=discord.TextStyle.paragraph,
+            default=bot.prompt_service.read_prompt("compression").strip(),
+            required=False,
+            max_length=2000,
+            placeholder="请输出 JSON，包含 summary_text 和 keywords 两个字段。",
+        )
+        self.add_item(self.compression_prompt)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        save_config({
+            "COMPRESSION_BASE_URL": self.base_url.value.strip(),
+            "COMPRESSION_API_KEY": self.api_key.value.strip(),
+            "COMPRESSION_MODEL": self.model.value.strip(),
+        })
+        self.bot.prompt_service.write_prompt(target="compression", content=self.compression_prompt.value)
+        self.bot.apply_settings(load_settings())
+        await interaction.response.edit_message(
+            content="API 配置\n\n压缩 API 配置已保存，立即生效。",
+            view=ApiToolboxView(self.bot),
+        )
+
+
+class VisionModal(discord.ui.Modal, title="识图 API 配置"):
+    def __init__(self, bot: DiscordBot):
+        super().__init__()
+        self.bot = bot
+        s = bot.settings
+        self.base_url = discord.ui.TextInput(
+            label="VISION_BASE_URL",
+            default=s.vision_base_url or "",
+            required=False, placeholder="留空则使用聊天 API",
+        )
+        self.add_item(self.base_url)
+        self.api_key = discord.ui.TextInput(
+            label="VISION_API_KEY",
+            default=s.vision_api_key or "",
+            required=False, placeholder="留空则使用聊天 API",
+        )
+        self.add_item(self.api_key)
+        self.model = discord.ui.TextInput(
+            label="VISION_MODEL",
+            default=s.vision_model or "",
+            required=False, max_length=120, placeholder="留空则使用聊天 API",
+        )
+        self.add_item(self.model)
+        self.vision_prompt = discord.ui.TextInput(
+            label="识图提示词",
+            style=discord.TextStyle.paragraph,
+            default=bot.prompt_service.read_prompt("vision").strip(),
+            required=False,
+            max_length=800,
+        )
+        self.add_item(self.vision_prompt)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        save_config({
+            "VISION_BASE_URL": self.base_url.value.strip(),
+            "VISION_API_KEY": self.api_key.value.strip(),
+            "VISION_MODEL": self.model.value.strip(),
+        })
+        self.bot.prompt_service.write_prompt(target="vision", content=self.vision_prompt.value)
+        self.bot.apply_settings(load_settings())
+        await interaction.response.edit_message(
+            content="API 配置\n\n识图 API 配置已保存，立即生效。",
+            view=ApiToolboxView(self.bot),
+        )
+
+
+class PixAITokenModal(discord.ui.Modal, title="画图 API 配置"):
+    def __init__(self, bot: DiscordBot):
+        super().__init__()
+        self.bot = bot
+        tokens = bot.settings.pixai_tokens
+        padded = (tokens + [""] * 4)[:4]
+        self.token_slots: list[discord.ui.TextInput] = []
+        for i in range(4):
+            inp = discord.ui.TextInput(
+                label=f"Token {i + 1}",
+                default=padded[i],
+                required=False,
+                max_length=800,
+                style=discord.TextStyle.short,
+                placeholder="PixAI JWT Token",
+            )
+            self.token_slots.append(inp)
+            self.add_item(inp)
+        self.pixai_prompt = discord.ui.TextInput(
+            label="画图提示词（自动追加到用户 prompt 后）",
+            style=discord.TextStyle.paragraph,
+            default=bot.prompt_service.read_prompt("pixai").strip(),
+            required=False,
+            max_length=2000,
+            placeholder="masterpiece, best quality, high detail",
+        )
+        self.add_item(self.pixai_prompt)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        tokens = [s.value.strip() for s in self.token_slots if s.value.strip()]
+        save_config({"PIXAI_TOKENS": ",".join(tokens)})
+        self.bot.prompt_service.write_prompt(target="pixai", content=self.pixai_prompt.value)
+        self.bot.apply_settings(load_settings())
+        await interaction.response.edit_message(
+            content=f"API 配置\n\n画图 API 配置已保存，共 {len(tokens)} 个 Token，立即生效。",
+            view=ApiToolboxView(self.bot),
+        )
+
+
 class WatchOnlineTimeModal(discord.ui.Modal, title="上线监听"):
     def __init__(self, bot: DiscordBot):
         super().__init__()
@@ -326,46 +453,40 @@ class JealousyChannelsModal(discord.ui.Modal, title="频道偷窥"):
 # ============================================================================
 
 class ApiToolboxView(BotView):
-    @discord.ui.button(label="聊天 API", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="聊天 API", style=discord.ButtonStyle.primary, row=0)
     async def chat_api(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(ConfigModal(
             self.bot, fields=CHAT_API_FIELDS, title="聊天 API 配置",
             confirm="API 配置\n\n聊天 API 配置已保存，立即生效。", return_view=ApiToolboxView,
         ))
 
-    @discord.ui.button(label="识图 API", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="识图 API", style=discord.ButtonStyle.primary, row=0)
     async def vision_api(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(ConfigModal(
-            self.bot, fields=VISION_API_FIELDS, title="识图 API 配置",
-            confirm="API 配置\n\n识图 API 配置已保存，立即生效。", return_view=ApiToolboxView,
-        ))
+        await interaction.response.send_modal(VisionModal(self.bot))
 
-    @discord.ui.button(label="搜索 API", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="搜索 API", style=discord.ButtonStyle.primary, row=0)
     async def search_api(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(ConfigModal(
             self.bot, fields=SEARCH_API_FIELDS, title="搜索 API 配置",
             confirm="API 配置\n\n搜索 API 配置已保存，立即生效。", return_view=ApiToolboxView,
         ))
 
-    @discord.ui.button(label="压缩 API", style=discord.ButtonStyle.primary)
-    async def compression_api(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(ConfigModal(
-            self.bot, fields=COMPRESSION_API_FIELDS, title="压缩 API 配置",
-            confirm="API 配置\n\n压缩 API 配置已保存，立即生效。", return_view=ApiToolboxView,
-        ))
-
-    @discord.ui.button(label="语音 TTS", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="语音 API", style=discord.ButtonStyle.primary, row=1)
     async def tts_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(ConfigModal(
-            self.bot, fields=TTS_FIELDS, title="语音 TTS 配置",
-            confirm="API 配置\n\n语音 TTS 配置已保存，立即生效。", return_view=ApiToolboxView,
+            self.bot, fields=TTS_FIELDS, title="语音 API 配置",
+            confirm="API 配置\n\n语音 API 配置已保存，立即生效。", return_view=ApiToolboxView,
         ))
 
-    @discord.ui.button(label="压缩提示词", style=discord.ButtonStyle.secondary)
-    async def edit_compression(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(PromptEditModal(self.bot, target="compression", title="编辑压缩提示词"))
+    @discord.ui.button(label="压缩 API", style=discord.ButtonStyle.primary, row=1)
+    async def compression_api(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(CompressionModal(self.bot))
 
-    @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="画图 API", style=discord.ButtonStyle.primary, row=1)
+    async def pixai_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(PixAITokenModal(self.bot))
+
+    @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary, row=2)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(content="工具箱", view=ToolboxView(self.bot))
 
@@ -454,14 +575,14 @@ class ChatControlView(BotView):
             view=ChatControlView(self.bot),
         )
 
-    @discord.ui.button(label="上下文条数", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="上下文条数", style=discord.ButtonStyle.secondary, row=0)
     async def context_entries(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(ConfigModal(
             self.bot, fields=CONTEXT_ENTRIES_FIELDS, title="上下文条数",
             confirm="聊天控制\n\n上下文条数已保存，立即生效。", return_view=ChatControlView,
         ))
 
-    @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary, row=1)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(content="工具箱", view=ToolboxView(self.bot))
 
