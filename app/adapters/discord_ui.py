@@ -103,9 +103,9 @@ CHAT_API_FIELDS = [
 
 
 SEARCH_API_FIELDS = [
-    FieldDef("SEARCH_BASE_URL", "SEARCH_BASE_URL", required=False, placeholder="留空则使用 DuckDuckGo"),
-    FieldDef("SEARCH_API_KEY", "SEARCH_API_KEY", required=False, placeholder="留空则使用 DuckDuckGo"),
-    FieldDef("SEARCH_MODEL", "SEARCH_MODEL", required=False, max_length=120, placeholder="留空默认 grok-3-mini-fast"),
+    FieldDef("SEARCH_BASE_URL", "SEARCH_BASE_URL", required=False, placeholder="留空则使用聊天 API"),
+    FieldDef("SEARCH_API_KEY", "SEARCH_API_KEY", required=False, placeholder="留空则使用聊天 API"),
+    FieldDef("SEARCH_MODEL", "SEARCH_MODEL", required=False, max_length=120, placeholder="留空则使用duckduckgo"),
 ]
 
 COMPRESSION_API_FIELDS = [
@@ -500,6 +500,10 @@ class PromptToolboxView(BotView):
     async def edit_userinfo(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(PromptEditModal(self.bot, target="userinfo", title="编辑用户信息"))
 
+    @discord.ui.button(label="小说模式提示词", style=discord.ButtonStyle.primary)
+    async def edit_novel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(PromptEditModal(self.bot, target="novel", title="编辑小说模式提示词"))
+
     @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(content="工具箱", view=ToolboxView(self.bot))
@@ -541,10 +545,16 @@ class ChatControlView(BotView):
     def __init__(self, bot: DiscordBot):
         super().__init__(bot)
 
-        is_novel = bot.settings.split_mode == "novel"
+        mode = bot.settings.split_mode
+        mode_labels = {"chat": "聊天模式", "novel": "小说模式", "auto": "LLM模式"}
+        mode_styles = {
+            "chat": discord.ButtonStyle.primary,
+            "novel": discord.ButtonStyle.success,
+            "auto": discord.ButtonStyle.secondary,
+        }
         self.split_btn = discord.ui.Button(
-            label="小说模式" if is_novel else "聊天模式",
-            style=discord.ButtonStyle.success if is_novel else discord.ButtonStyle.primary,
+            label=mode_labels.get(mode, "LLM模式"),
+            style=mode_styles.get(mode, discord.ButtonStyle.secondary),
         )
         self.split_btn.callback = self._toggle_split_mode
         self.add_item(self.split_btn)
@@ -558,11 +568,15 @@ class ChatControlView(BotView):
         self.add_item(self.tw_btn)
 
     async def _toggle_split_mode(self, interaction: discord.Interaction) -> None:
-        new_mode = "chat" if self.bot.settings.split_mode == "novel" else "novel"
+        cycle = ["chat", "novel", "auto"]
+        current = self.bot.settings.split_mode
+        idx = cycle.index(current) if current in cycle else 0
+        new_mode = cycle[(idx + 1) % len(cycle)]
         save_config({"SPLIT_MODE": new_mode})
         self.bot.apply_settings(load_settings())
+        mode_labels = {"chat": "聊天模式", "novel": "小说模式", "auto": "LLM模式"}
         await interaction.response.edit_message(
-            content=f"聊天控制\n\n已切换为{'小说模式' if new_mode == 'novel' else '聊天模式'}",
+            content=f"聊天控制\n\n已切换为{mode_labels[new_mode]}",
             view=ChatControlView(self.bot),
         )
 

@@ -13,6 +13,9 @@ from discord import AllowedMentions
 if TYPE_CHECKING:
     from app.infra.llm_client import LLMResponse
 
+_TAG_RE = re.compile(r"\[(?:TIMER|REACTION|IMAGE|VOICE|SEARCH):\s*[^\]]+\]")
+_SWITCH_MODE_RE = re.compile(r"\[SWITCH_MODE:\s*(chat|novel)\]")
+
 
 class DispatchMixin:
     """Methods for dispatching API calls, streaming replies, and handling tools."""
@@ -39,7 +42,7 @@ class DispatchMixin:
         *,
         channel: discord.abc.Messageable | None = None,
     ) -> None:
-        do_split = self.settings.split_mode == "chat"
+        do_split = self.effective_split_mode == "chat"
         sentences = self._split_sentences(reply, split=do_split)
         if not sentences:
             return
@@ -53,6 +56,44 @@ class DispatchMixin:
             )
             if idx < len(sentences) - 1:
                 await asyncio.sleep(0.8)
+
+    @staticmethod
+    def _filter_tags(raw: str, tag_hold: str) -> tuple[str, str, str | None]:
+        """Filter [TAG: ...] markers from streaming text.
+
+        Returns (safe_text_to_send, remaining_hold_buffer, detected_mode).
+        detected_mode is "chat"/"novel" if a SWITCH_MODE tag was found, else None.
+        """
+        combined = tag_hold + raw
+        safe = []
+        hold = ""
+        detected_mode: str | None = None
+        i = 0
+        while i < len(combined):
+            ch = combined[i]
+            if hold:
+                hold += ch
+                if ch == "]":
+                    # check SWITCH_MODE first (swallow + detect mode)
+                    m = _SWITCH_MODE_RE.fullmatch(hold)
+                    if m:
+                        detected_mode = m.group(1)
+                        hold = ""  # swallow the tag
+                    elif _TAG_RE.fullmatch(hold):
+                        hold = ""  # swallow the tag
+                    else:
+                        safe.append(hold)
+                        hold = ""
+                elif len(hold) > 500:
+                    # safety: not a tag, release
+                    safe.append(hold)
+                    hold = ""
+            elif ch == "[":
+                hold = ch
+            else:
+                safe.append(ch)
+            i += 1
+        return "".join(safe), hold, detected_mode
 
     async def _stream_and_send(
         self,
@@ -80,9 +121,10 @@ class DispatchMixin:
         loop.run_in_executor(None, _produce)
 
         buffer = ""
+        tag_hold = ""
         is_first = True
         sent_msgs: list[discord.Message] = []
-        is_novel = self.settings.split_mode == "novel"
+        is_novel = self.effective_split_mode == "novel"
         novel_msg: discord.Message | None = None
         novel_full = ""
         novel_last_edit = 0.0
@@ -95,9 +137,17 @@ class DispatchMixin:
                 continue
 
             if kind == "text":
-                buffer += value
+                filtered, tag_hold, detected_mode = self._filter_tags(value, tag_hold)
+                if detected_mode:
+                    is_novel = detected_mode == "novel"
+                    if is_novel and not novel_msg:
+                        # switching to novel mid-stream: move buffered text into novel_full
+                        novel_full = buffer
+                if not filtered:
+                    continue
+                buffer += filtered
                 if is_novel:
-                    novel_full += value
+                    novel_full += filtered
                     now = asyncio.get_event_loop().time()
                     if now - novel_last_edit >= 1.0:
                         display = novel_full.strip()
@@ -111,9 +161,9 @@ class DispatchMixin:
                                 elif len(display) <= 2000:
                                     await novel_msg.edit(content=display)
                                 else:
-                                    novel_full = value
+                                    novel_full = filtered
                                     novel_msg = await channel.send(
-                                        value.strip() or "...",
+                                        filtered.strip() or "...",
                                         allowed_mentions=AllowedMentions.none(),
                                     )
                                     sent_msgs.append(novel_msg)
@@ -135,6 +185,12 @@ class DispatchMixin:
                             is_first = False
                         buffer = parts[-1]
             elif kind == "done":
+                # flush any remaining tag_hold (incomplete tag = not a tag)
+                if tag_hold:
+                    buffer += tag_hold
+                    if is_novel:
+                        novel_full += tag_hold
+                    tag_hold = ""
                 if is_novel:
                     display = novel_full.strip()
                     if display:
@@ -162,6 +218,42 @@ class DispatchMixin:
                 raise value  # type: ignore[misc]
 
     # -- dispatch -------------------------------------------------------------
+
+    async def _send_and_finalize(
+        self,
+        channel_id: int,
+        channel: discord.abc.Messageable,
+        messages: list[dict[str, str]],
+        anchor_message: discord.Message | None,
+    ) -> None:
+        """Shared tail: stream reply, save, handle tools, schedule proactive."""
+        try:
+            await channel.typing()
+            response, sent_msgs = await self._stream_and_send(
+                anchor_message, channel, messages,
+            )
+            reply = (response.text or "").strip()
+            has_search = any(tc.name == "web_search" for tc in response.tool_calls)
+            if reply and not has_search:
+                self._save_bot_reply(channel_id, reply)
+            edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
+            await self._handle_tool_calls(
+                response,
+                channel_id,
+                channel,
+                prior_messages=messages,
+                edit_msg=edit_msg,
+                had_reply=bool(reply),
+                source_message=anchor_message,
+            )
+            self._schedule_proactive(channel_id, channel)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("UNKNOWN", "failed to send reply", exc=exc)
+            self._save_bot_reply(channel_id, "[系统: API请求失败]")
+            try:
+                await channel.send("我刚刚有点卡住了，等我一下再试试。")
+            except Exception:
+                pass
 
     async def _dispatch_after_idle(self, channel_id: int, user_id: int) -> None:
         while True:
@@ -204,8 +296,6 @@ class DispatchMixin:
             self.logger.error("LOGIC", "empty transcript, skip api request")
             return
         self._save_entry(channel_id, "user", pending.user_label, merged_text, at=pending.first_time)
-        if self.settings.show_api_payload:
-            self.logger.info(f"📨 api_payload\n{transcript}")
         messages = [{"role": "user", "content": transcript}]
         merged_one_line = merged_text.replace("\n", "\\n")
         now_send = time.monotonic()
@@ -213,36 +303,11 @@ class DispatchMixin:
         self.logger.info(
             f"✅ api_request_sent wait_from_last_msg={wait_from_last_msg:.2f}s includes={merged_one_line}"
         )
+        self._log_typing(
+            f"🚀 api_sent user={pending.user_label} chunks={len(pending.chunks)} merged_len={len(merged_text)}"
+        )
 
-        try:
-            await pending.channel.typing()
-            response, sent_msgs = await self._stream_and_send(
-                pending.anchor_message, pending.channel, messages,
-            )
-            reply = (response.text or "").strip()
-            has_search = any(tc.name == "web_search" for tc in response.tool_calls)
-            if reply and not has_search:
-                self._save_bot_reply(channel_id, reply)
-            self._log_typing(
-                f"🚀 api_sent user={pending.user_label} chunks={len(pending.chunks)} merged_len={len(merged_text)}"
-            )
-            edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
-            await self._handle_tool_calls(
-                response,
-                channel_id,
-                pending.channel,
-                prior_messages=messages,
-                edit_msg=edit_msg,
-                had_reply=bool(reply),
-                source_message=pending.anchor_message,
-            )
-            self._schedule_proactive(channel_id, pending.channel)
-        except Exception as exc:  # noqa: BLE001
-            self.logger.error("UNKNOWN", "failed to send reply", exc=exc)
-            try:
-                await pending.channel.send("我刚刚有点卡住了，等我一下再试试。")
-            except Exception:
-                pass
+        await self._send_and_finalize(channel_id, pending.channel, messages, pending.anchor_message)
 
     async def _reply_immediate(self, message: discord.Message, text: str) -> None:
         channel_id = message.channel.id
@@ -263,38 +328,11 @@ class DispatchMixin:
             self.logger.error("LOGIC", "empty transcript, skip api request")
             return
         self._save_entry(channel_id, "user", user_label, text, at=now_clock)
-        if self.settings.show_api_payload:
-            self.logger.info(f"📨 api_payload\n{transcript}")
         messages = [{"role": "user", "content": transcript}]
         text_one_line = text.replace("\n", "\\n")
         self.logger.info(f"✅ api_request_sent (immediate) includes={text_one_line}")
 
-        try:
-            await message.channel.typing()
-            response, sent_msgs = await self._stream_and_send(
-                message, message.channel, messages,
-            )
-            reply = (response.text or "").strip()
-            has_search = any(tc.name == "web_search" for tc in response.tool_calls)
-            if reply and not has_search:
-                self._save_bot_reply(channel_id, reply)
-            edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
-            await self._handle_tool_calls(
-                response,
-                channel_id,
-                message.channel,
-                prior_messages=messages,
-                edit_msg=edit_msg,
-                had_reply=bool(reply),
-                source_message=message,
-            )
-            self._schedule_proactive(channel_id, message.channel)
-        except Exception as exc:  # noqa: BLE001
-            self.logger.error("UNKNOWN", "failed to send reply", exc=exc)
-            try:
-                await message.channel.send("我刚刚有点卡住了，等我一下再试试。")
-            except Exception:
-                pass
+        await self._send_and_finalize(channel_id, message.channel, messages, message)
 
     # -- tool calls -----------------------------------------------------------
 
@@ -359,14 +397,67 @@ class DispatchMixin:
             if tc.name == "send_voice":
                 voice_text = str(tc.input.get("text", "")).strip()
                 if voice_text:
-                    await self._send_voice(voice_text, channel_id, channel)
+                    await self._send_voice(voice_text, channel_id, channel, source_message)
+            if tc.name == "generate_image":
+                prompt = str(tc.input.get("prompt", "")).strip()
+                if prompt:
+                    await self._send_pixai_image(prompt, channel_id, channel, source_message)
+            if tc.name == "switch_mode":
+                new_mode = tc.input.get("mode", "")
+                if new_mode in ("chat", "novel") and new_mode != self._auto_effective_mode:
+                    self._auto_effective_mode = new_mode
+                    self.reply_service.effective_mode = new_mode
+                    label = "小说模式" if new_mode == "novel" else "聊天模式"
+                    self.logger.info(f"🔄 switch_mode → {label}")
             if tc.name == "web_search":
                 query = tc.input.get("query", "")
                 if query:
                     if search_depth >= 3:
                         self.logger.info(f"🔍 search_depth_limit query={query} depth={search_depth}")
                     else:
+                        if search_depth == 0:
+                            await self._add_reaction(source_message, "🔍")
                         await self._execute_search(query, channel_id, channel, prior_messages, search_depth=search_depth, edit_msg=edit_msg)
+                        if search_depth == 0:
+                            await self._remove_reaction(source_message, "🔍")
+
+    # -- shared error feedback ------------------------------------------------
+
+    async def _send_error_feedback(
+        self,
+        channel_id: int,
+        channel: discord.abc.Messageable,
+        title: str,
+        detail: str,
+        history_text: str,
+    ) -> None:
+        """Send a red embed error + write to chat history. Shared by voice & image."""
+        self._save_bot_reply(channel_id, history_text)
+        try:
+            embed = discord.Embed(title=title, description=detail, color=discord.Color.red())
+            await channel.send(embed=embed)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # -- reaction helpers -----------------------------------------------------
+
+    @staticmethod
+    async def _add_reaction(msg: discord.Message | None, emoji: str) -> None:
+        if msg is None:
+            return
+        try:
+            await msg.add_reaction(emoji)
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _remove_reaction(self, msg: discord.Message | None, emoji: str) -> None:
+        if msg is None:
+            return
+        try:
+            me = msg.guild.me if msg.guild else self.client.user  # type: ignore[union-attr]
+            await msg.remove_reaction(emoji, me)
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- voice ----------------------------------------------------------------
 
@@ -375,6 +466,7 @@ class DispatchMixin:
         text: str,
         channel_id: int,
         channel: discord.abc.Messageable,
+        source_message: discord.Message | None = None,
     ) -> None:
         from app.infra.tts_client import synthesize
 
@@ -383,6 +475,7 @@ class DispatchMixin:
             self.logger.info("🔇 tts skipped: no api_key or voice_id")
             return
 
+        await self._add_reaction(source_message, "🎤")
         try:
             audio_bytes = await asyncio.to_thread(
                 synthesize,
@@ -395,10 +488,18 @@ class DispatchMixin:
             )
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "tts synthesize failed", exc=exc)
+            await self._remove_reaction(source_message, "🎤")
+            await self._send_error_feedback(
+                channel_id, channel, "⛔ 语音合成失败", str(exc), "[系统: 语音合成失败]",
+            )
             return
 
         if not audio_bytes:
             self.logger.info("🔇 tts returned empty audio")
+            await self._remove_reaction(source_message, "🎤")
+            await self._send_error_feedback(
+                channel_id, channel, "⛔ 语音合成失败", "TTS 返回空音频", "[系统: 语音合成失败]",
+            )
             return
 
         import io
@@ -408,6 +509,52 @@ class DispatchMixin:
             self._save_bot_reply(channel_id, f"[语音: {text}]")
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "failed to send voice message", exc=exc)
+        await self._remove_reaction(source_message, "🎤")
+
+    # -- pixai image ----------------------------------------------------------
+
+    async def _send_pixai_image(
+        self,
+        prompt: str,
+        channel_id: int,
+        channel: discord.abc.Messageable,
+        source_message: discord.Message | None = None,
+    ) -> None:
+        if not self.pixai_client.available:
+            self.logger.info("🎨 pixai skipped: no tokens configured")
+            return
+
+        await self._add_reaction(source_message, "🎨")
+        try:
+            url = await asyncio.to_thread(self.pixai_client.generate_image, prompt)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("UNKNOWN", "pixai generate failed", exc=exc)
+            await self._remove_reaction(source_message, "🎨")
+            await self._send_error_feedback(
+                channel_id, channel, "⛔ 图片生成失败", str(exc), "[系统: 图片生成失败]",
+            )
+            return
+
+        try:
+            import io
+            import requests as _req
+            resp = await asyncio.to_thread(
+                lambda: _req.get(url, timeout=60)
+            )
+            resp.raise_for_status()
+            if len(resp.content) < 1000:
+                raise RuntimeError(f"image too small ({len(resp.content)} bytes), likely not a real image")
+            file = discord.File(io.BytesIO(resp.content), filename="pixai.png")
+            await channel.send(file=file)
+            self._save_bot_reply(channel_id, f"[图片: {prompt}]")
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("UNKNOWN", "failed to send pixai image", exc=exc)
+            try:
+                await channel.send(f"图片生成好了但发送失败：{url}")
+            except Exception:
+                pass
+
+        await self._remove_reaction(source_message, "🎨")
 
     # -- search ---------------------------------------------------------------
 
@@ -427,14 +574,14 @@ class DispatchMixin:
         self.logger.info(f"🔍 web_search query={query} depth={search_depth}")
         recent_entries = self.history_store.load_all_entries(channel_id=channel_id)
         context_hint = self.history_store.render_entries(recent_entries[-10:]) if recent_entries else ""
-        soul = load_system_prompt()
+        soul = load_system_prompt(effective_mode=self.effective_split_mode, auto_mode=self.settings.split_mode == "auto")
         try:
             results = await asyncio.to_thread(
                 web_search,
                 query,
-                base_url=self.settings.search_base_url,
-                api_key=self.settings.search_api_key,
-                model=self.settings.search_model,
+                base_url=self.settings.search_base_url or self.settings.base_url,
+                api_key=self.settings.search_api_key or self.settings.api_key,
+                model=self.settings.search_model or "grok-4.1-fast",
                 context=context_hint,
                 soul=soul,
             )
@@ -463,14 +610,16 @@ class DispatchMixin:
             messages.append({"role": "user", "content": search_block})
 
         next_depth = search_depth + 1
-        wants_more = next_depth < 3
         try:
             async with channel.typing():
                 search_response = await asyncio.to_thread(
-                    self.reply_service.generate_reply_with_tools, messages, include_tools=True, include_search=wants_more,
+                    self.reply_service.generate_reply_with_tools, messages, include_tools=True,
                 )
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "search follow-up api request failed", exc=exc)
+            await self._send_error_feedback(
+                channel_id, channel, "⛔ 搜索失败", str(exc), "[系统: 搜索失败]",
+            )
             return
 
         next_search = next(
@@ -597,10 +746,11 @@ class DispatchMixin:
         if not has_images:
             return []
 
-        vision_prompt = self.settings.vision_prompt
+        vision_prompt = self.prompt_service.read_prompt("vision").strip()
         channel_id = message.channel.id
         recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
         context = self.history_store.render_entries(recent) if recent else ""
+        await self._add_reaction(message, "👁️")
         status_msg = await message.channel.send("正在识图...")
         descriptions: list[str] = []
 
@@ -616,12 +766,14 @@ class DispatchMixin:
                 )
                 if desc:
                     descriptions.append(f"[图片: {desc}]")
-            except Exception:
-                self.logger.error("VISION", f"failed to describe attachment {att.filename}")
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("VISION", f"failed to describe attachment {att.filename}", exc=exc)
+                descriptions.append(f"[图片: {att.filename} 识别失败]")
 
         try:
             await status_msg.delete()
         except Exception:  # noqa: BLE001
             pass
+        await self._remove_reaction(message, "👁️")
 
         return descriptions

@@ -95,6 +95,59 @@ class ProactiveMixin:
             for channel_id, user_id in expired:
                 self._stop_typing_session(channel_id, user_id, reason="timeout")
 
+    # -- common proactive reply -----------------------------------------------
+
+    async def _proactive_reply(
+        self,
+        channel_id: int,
+        channel: discord.abc.Messageable,
+        system_note: str,
+        *,
+        check_silent: bool = True,
+        check_new_message: bool = False,
+        schedule_proactive: bool = False,
+        log_tag: str = "proactive",
+    ) -> None:
+        """Shared path: load recent history, append *system_note*, call LLM, send reply, handle tools."""
+        recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
+        history_block = self.history_store.render_entries(recent) if recent else ""
+        transcript = f"{history_block}\n{system_note}".strip() if history_block else system_note
+
+        messages = [{"role": "user", "content": transcript}]
+        fire_ts = time.time() if check_new_message else 0.0
+        try:
+            async with channel.typing():
+                response = await asyncio.to_thread(
+                    self.reply_service.generate_reply_with_tools, messages, include_tools=True,
+                )
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("UNKNOWN", f"{log_tag} api request failed", exc=exc)
+            return
+
+        reply = (response.text or "").strip()
+        suppressed = False
+        if not reply:
+            suppressed = True
+        elif check_silent and "[SILENT]" in reply:
+            suppressed = True
+        elif check_new_message and self._channel_has_new_message(channel_id, fire_ts):
+            self._log_typing(f"⏰ {log_tag}_suppressed ch={channel_id} (new message arrived)")
+            suppressed = True
+
+        if not suppressed:
+            try:
+                await self._reply_by_sentence(None, reply, channel=channel)
+                self._save_bot_reply(channel_id, reply)
+                self._log_typing(f"⏰ {log_tag}_sent ch={channel_id}")
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("UNKNOWN", f"failed to send {log_tag} message", exc=exc)
+        elif reply:
+            self._log_typing(f"🔇 {log_tag}_silent ch={channel_id}")
+
+        await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
+        if schedule_proactive:
+            self._schedule_proactive(channel_id, channel)
+
     # -- variable timer / proactive -------------------------------------------
 
     def _schedule_variable_timer(
@@ -135,8 +188,6 @@ class ProactiveMixin:
             self._log_typing(f"🤫 timer_quiet ch={channel_id} s={seconds}")
             return
 
-        recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
-        transcript = self.history_store.render_entries(recent) if recent else ""
         is_typing_nudge = channel_id in self._typing_nudge_channels
         self._typing_nudge_channels.discard(channel_id)
         if is_typing_nudge:
@@ -155,33 +206,11 @@ class ProactiveMixin:
         if pending_reactions:
             reaction_lines = "\n".join(f"- {r}" for r in pending_reactions)
             timer_note += f"\n[system: 用户在你空闲期间添加了以下表情反应]\n{reaction_lines}"
-        if transcript:
-            transcript = f"{transcript}\n{timer_note}"
-        else:
-            transcript = timer_note
 
-        messages = [{"role": "user", "content": transcript}]
-        try:
-            async with channel.typing():
-                response = await asyncio.to_thread(
-                    self.reply_service.generate_reply_with_tools, messages, include_tools=True,
-                )
-        except Exception as exc:  # noqa: BLE001
-            self.logger.error("UNKNOWN", "variable timer api request failed", exc=exc)
-            return
-
-        reply = (response.text or "").strip()
-        if reply and "[SILENT]" not in reply:
-            try:
-                await self._reply_by_sentence(None, reply, channel=channel)
-                self._save_bot_reply(channel_id, reply)
-                self._log_typing(f"⏰ timer_sent ch={channel_id} reply={reply}")
-            except Exception as exc:  # noqa: BLE001
-                self.logger.error("UNKNOWN", "failed to send variable timer message", exc=exc)
-        else:
-            self._log_typing(f"🔇 time_fire ch={channel_id}")
-
-        await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
+        await self._proactive_reply(
+            channel_id, channel, timer_note,
+            check_silent=True, check_new_message=True, log_tag="timer",
+        )
 
     def _schedule_proactive(self, channel_id: int, channel: discord.abc.Messageable) -> None:
         self._typing_nudge_channels.discard(channel_id)
@@ -249,35 +278,15 @@ class ProactiveMixin:
                 self.logger.info(f"⏰ alarm_buffered channel={channel_id} reason={reason} remaining={remaining:.0f}s")
                 return
 
-        recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
-        history_block = self.history_store.render_entries(recent) if recent else ""
         alarm_note = (
             f"[system: your set_timer for {seconds}s has expired]\n"
             f"你之前答应提醒用户：{reason}\n"
             "请现在提醒用户这件事，不可以沉默。保持你一贯的说话风格和人格。"
         )
-        transcript = f"{history_block}\n{alarm_note}".strip()
-
-        messages = [{"role": "user", "content": transcript}]
-        try:
-            async with channel.typing():
-                response = await asyncio.to_thread(
-                    self.reply_service.generate_reply_with_tools, messages, include_tools=True,
-                )
-        except Exception as exc:  # noqa: BLE001
-            self.logger.error("UNKNOWN", "alarm api request failed", exc=exc)
-            return
-
-        reply = (response.text or "").strip()
-        if reply:
-            try:
-                await self._reply_by_sentence(None, reply, channel=channel)
-                self._save_bot_reply(channel_id, reply)
-                self._log_typing(f"⏰ alarm_sent ch={channel_id} reason={reason} reply={reply}")
-            except Exception as exc:  # noqa: BLE001
-                self.logger.error("UNKNOWN", "failed to send alarm message", exc=exc)
-
-        await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
+        await self._proactive_reply(
+            channel_id, channel, alarm_note,
+            check_silent=False, log_tag="alarm",
+        )
 
     # -- quiet hours ----------------------------------------------------------
 
@@ -333,12 +342,7 @@ class ProactiveMixin:
         proactive_prompt = self.prompt_service.read_prompt("proactive")
 
         for channel_id, channel in channels.items():
-            recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
-            history_block = self.history_store.render_entries(recent) if recent else ""
-
             parts: list[str] = []
-            if history_block:
-                parts.append(history_block)
             parts.append(f"[system: 静默时间已结束]\n{morning_prompt}")
             reasons = buffered.get(channel_id, [])
             if reasons:
@@ -348,28 +352,11 @@ class ProactiveMixin:
                     f"{alarm_lines}"
                 )
             parts.append(f"[system] {proactive_prompt}")
-            transcript = "\n".join(parts)
 
-            messages = [{"role": "user", "content": transcript}]
-            try:
-                async with channel.typing():
-                    response = await asyncio.to_thread(
-                        self.reply_service.generate_reply_with_tools, messages, include_tools=True,
-                    )
-            except Exception as exc:  # noqa: BLE001
-                self.logger.error("UNKNOWN", "quiet flush api request failed", exc=exc)
-                continue
-
-            reply = (response.text or "").strip()
-            if reply:
-                try:
-                    await self._reply_by_sentence(None, reply, channel=channel)
-                    self._save_bot_reply(channel_id, reply)
-                    self._log_typing(f"🌅 morning ch={channel_id} alarms={len(reasons)}")
-                except Exception as exc:  # noqa: BLE001
-                    self.logger.error("UNKNOWN", "failed to send morning message", exc=exc)
-
-            await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
+            await self._proactive_reply(
+                channel_id, channel, "\n".join(parts),
+                check_silent=False, log_tag="morning",
+            )
 
     # -- watch online / presence ----------------------------------------------
 
@@ -395,38 +382,17 @@ class ProactiveMixin:
         if self._is_quiet_time():
             self.logger.info(f"👁️ watch_idle_fire user={user_id} quiet_hours")
             return
-        channel_id = channel.id
-        self.logger.info(f"👁️ watch_idle_fire user={user_id} ch={channel_id}")
-        recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
-        transcript = self.history_store.render_entries(recent) if recent else ""
+        self.logger.info(f"👁️ watch_idle_fire user={user_id} ch={channel.id}")
         minutes = int(self.watch_online_idle_seconds // 60) or 1
         raw_prompt = self.prompt_service.read_prompt("watch_online")
         if not raw_prompt.strip():
             raw_prompt = "[系统提示] 你关注的用户已经上线{minutes}分钟了但没有说话，跟他主动说句话。"
         timer_note = raw_prompt.strip().replace("{minutes}", str(minutes))
-        if transcript:
-            transcript = f"{transcript}\n{timer_note}"
-        else:
-            transcript = timer_note
-        messages = [{"role": "user", "content": transcript}]
-        try:
-            async with channel.typing():
-                response = await asyncio.to_thread(
-                    self.reply_service.generate_reply_with_tools, messages, include_tools=True,
-                )
-        except Exception as exc:  # noqa: BLE001
-            self.logger.error("UNKNOWN", "watch idle api request failed", exc=exc)
-            return
-        reply = (response.text or "").strip()
-        if reply and "[SILENT]" not in reply:
-            try:
-                await self._reply_by_sentence(None, reply, channel=channel)
-                self._save_bot_reply(channel_id, reply)
-                self.logger.info(f"👁️ watch_idle_sent user={user_id} ch={channel_id}")
-            except Exception as exc:  # noqa: BLE001
-                self.logger.error("UNKNOWN", "failed to send watch idle message", exc=exc)
-        await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
-        self._schedule_proactive(channel_id, channel)
+
+        await self._proactive_reply(
+            channel.id, channel, timer_note,
+            check_silent=True, schedule_proactive=True, log_tag="watch",
+        )
 
     def _load_last_message_ts(self) -> None:
         try:
@@ -444,17 +410,18 @@ class ProactiveMixin:
         self._last_msg_ts_path.write_text(_json.dumps(data), encoding="utf-8")
 
     def _find_channel_for_user(self, user_id: int, guild: discord.Guild) -> discord.abc.Messageable | None:
-        best_ch: int | None = None
+        jealousy_ids = set(self.settings.jealousy_channel_ids or [])
+        best_ch: discord.abc.Messageable | None = None
         best_ts: float = 0.0
         for (ch_id, uid), ts in self._last_message_ts.items():
-            if uid == user_id and ts > best_ts:
-                best_ts = ts
-                best_ch = ch_id
-        if best_ch is not None:
-            ch = guild.get_channel(best_ch)
-            if ch is not None:
-                return ch
-        return None
+            if uid == user_id and ts > best_ts and str(ch_id) not in jealousy_ids:
+                ch = self.client.get_channel(ch_id)
+                if ch is not None and getattr(ch, "guild", None) == guild:
+                    best_ts = ts
+                    best_ch = ch
+        if best_ch is None:
+            self._log_typing(f"💚 find_channel_fail user={user_id} no_candidate jealousy_ids={jealousy_ids}")
+        return best_ch
 
     # -- jealousy -------------------------------------------------------------
 
@@ -468,9 +435,11 @@ class ProactiveMixin:
             return
         guild = getattr(channel, "guild", None)
         if guild is None:
+            self._log_typing(f"💚 jealousy_skip reason=no_guild ch={channel.id} user={uid_str}")
             return
         bot_channel = self._find_channel_for_user(user.id, guild)
         if bot_channel is None:
+            self._log_typing(f"💚 jealousy_skip reason=no_bot_channel user={uid_str}")
             return
         if bot_channel.id == channel.id:
             return
@@ -491,45 +460,26 @@ class ProactiveMixin:
         channel_id = channel.id
         is_quiet = self._is_quiet_time()
         self.logger.info(f"💚 jealousy_fire user={user_id} ch={channel_id} msg_count={count} quiet={is_quiet}")
-        recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
-        transcript = self.history_store.render_entries(recent) if recent else ""
-        if is_quiet:
-            jealousy_note = (
-                f"[系统提示] 现在是安静时间段，ta不让你找ta，但ta自己跑去和情敌聊天了，"
-                f"一共发了{count}条消息。次数越多说明聊得越起劲。"
-                f"你可以自然地表达你的感受，比如吃醋、委屈、或者撒娇，但不要太过分。"
-                f"注意要符合你的人设，不要让对方觉得你在监视。"
-            )
-        else:
-            jealousy_note = (
-                f"[系统提示] 在过去十分钟里，ta正在和情敌聊天，"
-                f"一共发了{count}条消息。次数越多说明聊得越起劲。"
-                f"你可以自然地表达你的感受，比如吃醋、委屈、或者撒娇，但不要太过分。"
-                f"注意要符合你的人设，不要让对方觉得你在监视。"
-            )
-        if transcript:
-            transcript = f"{transcript}\n{jealousy_note}"
-        else:
-            transcript = jealousy_note
-        messages = [{"role": "user", "content": transcript}]
-        try:
-            async with channel.typing():
-                response = await asyncio.to_thread(
-                    self.reply_service.generate_reply_with_tools, messages, include_tools=True,
+        target = "jealousy_quiet" if is_quiet else "jealousy"
+        raw_prompt = self.prompt_service.read_prompt(target).strip()
+        if not raw_prompt:
+            if is_quiet:
+                raw_prompt = (
+                    "[系统提示] 现在是安静时间段，ta不让你找ta，但ta自己跑去和情敌聊天了，"
+                    "一共发了{count}条消息。次数越多说明聊得越起劲。"
+                    "你可以自然地表达你的感受，比如吃醋、委屈、或者撒娇，但不要太过分。"
+                    "注意要符合你的人设，不要让对方觉得你在监视。"
                 )
-        except Exception as exc:  # noqa: BLE001
-            self.logger.error("UNKNOWN", "jealousy api request failed", exc=exc)
-            return
-        reply = (response.text or "").strip()
-        if reply and "[SILENT]" not in reply:
-            try:
-                await self._reply_by_sentence(None, reply, channel=channel)
-                self._save_bot_reply(channel_id, reply)
-                self.logger.info(
-                    f"🏷️ jealousy_sent user={user_id} ch={channel_id} msg_count={count}"
-                    f" | prompt={jealousy_note}"
-                    f" | reply={reply}"
+            else:
+                raw_prompt = (
+                    "[系统提示] 在过去十分钟里，ta正在和情敌聊天，"
+                    "一共发了{count}条消息。次数越多说明聊得越起劲。"
+                    "你可以自然地表达你的感受，比如吃醋、委屈、或者撒娇，但不要太过分。"
+                    "注意要符合你的人设，不要让对方觉得你在监视。"
                 )
-            except Exception as exc:  # noqa: BLE001
-                self.logger.error("UNKNOWN", "failed to send jealousy message", exc=exc)
-        await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
+        jealousy_note = raw_prompt.replace("{count}", str(count))
+
+        await self._proactive_reply(
+            channel_id, channel, jealousy_note,
+            check_silent=True, log_tag="jealousy",
+        )

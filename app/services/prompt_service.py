@@ -9,9 +9,14 @@ PROMPT_TARGETS = {
     "soul": PROMPTS_DIR / "soul.txt",
     "userinfo": PROMPTS_DIR / "userinfo.txt",
     "compression": PROMPTS_DIR / "compression.txt",
+    "pixai": PROMPTS_DIR / "pixai.txt",
     "proactive": PROMPTS_DIR / "proactive.txt",
     "morning": PROMPTS_DIR / "morning.txt",
     "watch_online": PROMPTS_DIR / "watch_online.txt",
+    "vision": PROMPTS_DIR / "vision.txt",
+    "novel": PROMPTS_DIR / "novel.txt",
+    "jealousy": PROMPTS_DIR / "jealousy.txt",
+    "jealousy_quiet": PROMPTS_DIR / "jealousy_quiet.txt",
 }
 
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import httpx
 
 from app.infra.json_utils import extract_json_array
-from duckduckgo_search import DDGS
 
 
 def web_search(
@@ -17,11 +16,18 @@ def web_search(
     soul: str = "",
 ) -> list[dict[str, str]]:
     if base_url and api_key:
-        return _grok_search(query, base_url=base_url, api_key=api_key, model=model, max_results=max_results, context=context, soul=soul)
+        try:
+            results = _grok_search(query, base_url=base_url, api_key=api_key, model=model, max_results=max_results, context=context, soul=soul)
+            if results:
+                return results
+        except Exception:
+            pass
     return _ddg_search(query, max_results=max_results)
 
 
 def _ddg_search(query: str, *, max_results: int = 5) -> list[dict[str, str]]:
+    from duckduckgo_search import DDGS
+
     with DDGS() as ddgs:
         raw = list(ddgs.text(query, max_results=max_results))
     return [

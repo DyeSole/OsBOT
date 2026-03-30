@@ -64,6 +64,7 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
         self._pending_alarm_reasons: dict[int, list[str]] = {}
         self._pending_reactions: dict[int, list[str]] = {}
         self._typing_nudge_channels: set[int] = set()
+        self._auto_effective_mode: str = "chat"
         self._quiet_buffered_reasons: dict[int, list[str]] = {}
         self._quiet_channels: dict[int, discord.abc.Messageable] = {}
         self._quiet_flush_task: asyncio.Task | None = None
@@ -168,6 +169,9 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
         old_token = self.settings.discord_bot_token
         self.settings = settings
         self.reply_service.apply_settings(settings)
+        if settings.split_mode != "auto":
+            self._auto_effective_mode = "chat"
+        self.reply_service.effective_mode = self.effective_split_mode
         self.pixai_client.set_tokens(settings.pixai_tokens)
         self.compression_service.apply_settings(settings)
         self.logger.bot_key = settings.bot_key
@@ -240,6 +244,19 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
 
     def _typing_key(self, channel_id: int, user_id: int) -> tuple[int, int]:
         return (channel_id, user_id)
+
+    @property
+    def effective_split_mode(self) -> str:
+        mode = self.settings.split_mode
+        if mode == "auto":
+            return self._auto_effective_mode
+        return mode
+
+    def _channel_has_new_message(self, channel_id: int, since: float) -> bool:
+        for (ch_id, _uid), ts in self._last_message_ts.items():
+            if ch_id == channel_id and ts > since:
+                return True
+        return False
 
     @staticmethod
     def _now_clock() -> str:
@@ -466,6 +483,7 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
         self._last_message_ts[key] = time.time()
         self._save_last_message_ts()
 
+        self.logger.info(f"📩 msg_received user={self._user_label(message.author)} ch={message.channel.id} text={text[:80]}")
         self._stop_typing_session(message.channel.id, message.author.id, reason="message")
         self._typing_nudge_channels.discard(message.channel.id)
         self._check_jealousy(message.channel, message.author)

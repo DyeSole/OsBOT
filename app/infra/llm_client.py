@@ -10,7 +10,14 @@ from typing import Any, Callable
 
 import requests
 
+
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class UsageInfo:
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 @dataclass
@@ -23,6 +30,7 @@ class ToolCall:
 class LLMResponse:
     text: str
     tool_calls: list[ToolCall] = field(default_factory=list)
+    usage: UsageInfo | None = None
 
 
 class LLMClient:
@@ -37,12 +45,15 @@ class LLMClient:
         self.api_key = api_key
         self.model = model
         self.show_api_payload = show_api_payload
+        self.debug_context_meta: dict[str, Any] = {}
 
     def _is_anthropic_messages_api(self) -> bool:
         return self.base_url.endswith("/messages")
 
     def _request_url(self) -> str:
-        if self._is_anthropic_messages_api() or self.base_url.endswith("/chat/completions"):
+        if self._is_anthropic_messages_api():
+            return self.base_url
+        if self.base_url.endswith("/chat/completions"):
             return self.base_url
         return f"{self.base_url}/chat/completions"
 
@@ -56,12 +67,101 @@ class LLMClient:
             headers["anthropic-version"] = self.ANTHROPIC_VERSION
         return headers
 
+    def _can_count_tokens(self) -> bool:
+        return "claude" in self.model.lower()
+
+    def _count_tokens_candidates(self) -> list[str]:
+        base = self.base_url.rstrip("/")
+        candidates: list[str] = []
+        if self._is_anthropic_messages_api():
+            candidates.append(f"{base}/count_tokens")
+        else:
+            if base.endswith("/chat/completions"):
+                prefix = base[: -len("/chat/completions")]
+                candidates.extend(
+                    [
+                        f"{prefix}/messages/count_tokens",
+                        f"{prefix}/count_tokens",
+                    ]
+                )
+            else:
+                candidates.extend(
+                    [
+                        f"{base}/messages/count_tokens",
+                        f"{base}/count_tokens",
+                    ]
+                )
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in candidates:
+            if item not in seen:
+                seen.add(item)
+                out.append(item)
+        return out
+
+    @staticmethod
+    def _tiktoken_estimate(payload: dict[str, Any]) -> int:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        text_parts: list[str] = []
+        system = payload.get("system", "")
+        if isinstance(system, str) and system:
+            text_parts.append(system)
+        for msg in payload.get("messages", []):
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                text_parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("text"):
+                        text_parts.append(block["text"])
+        if payload.get("tools"):
+            text_parts.append(json.dumps(payload["tools"], ensure_ascii=False))
+        raw_count = len(enc.encode("\n".join(text_parts)))
+        return int(raw_count * 1.243)
+
+    def _count_tokens(self, payload: dict[str, Any]) -> tuple[int | None, dict[str, Any]]:
+        if not self._can_count_tokens():
+            estimate = self._tiktoken_estimate(payload)
+            return estimate, {"source": "tiktoken_estimate", "note": "model_not_claude"}
+
+        count_payload: dict[str, Any] = {
+            "model": payload.get("model", self.model),
+            "messages": payload.get("messages", []),
+        }
+        if payload.get("system"):
+            count_payload["system"] = payload["system"]
+        if payload.get("tools"):
+            count_payload["tools"] = payload["tools"]
+
+        for url in self._count_tokens_candidates():
+            try:
+                resp = requests.post(
+                    url,
+                    headers=self._headers(),
+                    json=count_payload,
+                    timeout=30,
+                )
+                if resp.status_code >= 400:
+                    continue
+                data = resp.json()
+                tokens = data.get("input_tokens")
+                if isinstance(tokens, int) and tokens >= 0:
+                    return tokens, {"source": "anthropic_count_tokens", "url": url}
+            except Exception:
+                continue
+
+        estimate = self._tiktoken_estimate(payload)
+        return estimate, {"source": "tiktoken_estimate", "note": "api_count_tokens_unavailable"}
+
     def _dump_payload_debug(
         self,
         *,
         payload: dict[str, Any],
         tools: list[dict[str, Any]] | None,
         stream: bool,
+        usage: "UsageInfo | None" = None,
+        used_tools: "list[ToolCall] | None" = None,
     ) -> None:
         if not self.show_api_payload:
             return
@@ -88,17 +188,42 @@ class LLMClient:
                 text = json.dumps(content, ensure_ascii=False, indent=2)
             history_parts.append(f"[{role}]\n{text}")
 
-        tools_text = json.dumps(tools or [], ensure_ascii=False, indent=2) if tools else ""
+        total_estimated_tokens, total_meta = self._count_tokens(payload)
+
+        if used_tools:
+            used_tools_text = "\n".join(
+                f"{tc.name}: {json.dumps(tc.input, ensure_ascii=False)}" for tc in used_tools
+            )
+        else:
+            used_tools_text = "（无）"
+
+        if usage:
+            actual_token_text = json.dumps(
+                {"in": usage.input_tokens, "out": usage.output_tokens},
+                ensure_ascii=False,
+            )
+        else:
+            actual_token_text = "（无）"
 
         parts = [
             "=======请求时间=======",
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "=======实时聊天记录预测Token=======",
+            json.dumps(self.debug_context_meta, ensure_ascii=False, indent=2) if self.debug_context_meta else "（无）",
+            "=======总预测Token=======",
+            json.dumps(
+                {"estimated_tokens": total_estimated_tokens, **total_meta},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            "=======实际Token=======",
+            actual_token_text,
             "=======系统提示词=======",
             system_prompt or "（空）",
             "=======历史记录=======",
             "\n\n".join(history_parts) if history_parts else "（空）",
             "=======工具=======",
-            tools_text or "（无）",
+            used_tools_text,
             "=======其他=======",
             f"模型: {self.model}\n流式: {'是' if stream else '否'}",
             "",
@@ -106,6 +231,7 @@ class LLMClient:
         with self.DEBUG_PAYLOAD_PATH.open("w", encoding="utf-8") as f:
             f.write("\n".join(parts))
             f.write("\n")
+        self.debug_context_meta = {}
 
     def _payload(
         self,
@@ -189,14 +315,35 @@ class LLMClient:
             calls.append(ToolCall(name=name, input=args))
         return calls
 
+    @staticmethod
+    def _extract_usage(data: dict[str, Any], *, anthropic: bool) -> UsageInfo | None:
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            return None
+        if anthropic:
+            inp = usage.get("input_tokens")
+            out = usage.get("output_tokens")
+        else:
+            inp = usage.get("prompt_tokens")
+            out = usage.get("completion_tokens")
+        if inp is None and out is None:
+            return None
+        return UsageInfo(
+            input_tokens=int(inp) if inp is not None else None,
+            output_tokens=int(out) if out is not None else None,
+        )
+
     def _parse_response(self, data: dict[str, Any]) -> LLMResponse:
-        if self._is_anthropic_messages_api():
+        is_anthropic = self._is_anthropic_messages_api()
+        usage = self._extract_usage(data, anthropic=is_anthropic)
+
+        if is_anthropic:
             content = data.get("content")
             text = self._extract_text_from_blocks(content)
             tool_calls = self._extract_tool_calls_anthropic(content)
             if not text and not tool_calls:
                 raise RuntimeError("llm response missing content")
-            return LLMResponse(text=text, tool_calls=tool_calls)
+            return LLMResponse(text=text, tool_calls=tool_calls, usage=usage)
 
         choices = data.get("choices") or []
         if not choices:
@@ -207,24 +354,20 @@ class LLMClient:
         tool_calls = self._extract_tool_calls_openai(message)
         if not text and not tool_calls:
             raise RuntimeError("llm response missing message content")
-        return LLMResponse(text=text, tool_calls=tool_calls)
-
-    def _validate_config(self) -> None:
-        if not self.base_url:
-            raise ValueError("missing BASE_URL")
-        if not self.api_key:
-            raise ValueError("missing API_KEY")
+        return LLMResponse(text=text, tool_calls=tool_calls, usage=usage)
 
     def _do_request(
         self,
         messages: list[dict[str, str]],
         system_prompt: str,
         tools: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        self._validate_config()
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if not self.base_url:
+            raise ValueError("missing BASE_URL")
+        if not self.api_key:
+            raise ValueError("missing API_KEY")
 
         payload = self._payload(messages, system_prompt, tools)
-        self._dump_payload_debug(payload=payload, tools=tools, stream=False)
 
         resp = requests.post(
             self._request_url(),
@@ -236,11 +379,12 @@ class LLMClient:
             snippet = resp.text[:200].replace("\n", " ")
             raise RuntimeError(f"llm http {resp.status_code}: {snippet}")
 
-        return resp.json()
+        return resp.json(), payload
 
     def generate(self, messages: list[dict[str, str]], system_prompt: str) -> str:
-        data = self._do_request(messages, system_prompt)
+        data, payload = self._do_request(messages, system_prompt)
         response = self._parse_response(data)
+        self._dump_payload_debug(payload=payload, tools=None, stream=False, usage=response.usage, used_tools=response.tool_calls)
         return response.text
 
     def generate_with_tools(
@@ -249,8 +393,10 @@ class LLMClient:
         system_prompt: str,
         tools: list[dict[str, Any]],
     ) -> LLMResponse:
-        data = self._do_request(messages, system_prompt, tools)
-        return self._parse_response(data)
+        data, payload = self._do_request(messages, system_prompt, tools)
+        response = self._parse_response(data)
+        self._dump_payload_debug(payload=payload, tools=tools, stream=False, usage=response.usage, used_tools=response.tool_calls)
+        return response
 
     def stream_with_tools(
         self,
@@ -259,11 +405,15 @@ class LLMClient:
         tools: list[dict[str, Any]],
         on_text: Callable[[str], None],
     ) -> LLMResponse:
-        self._validate_config()
+        if not self.base_url:
+            raise ValueError("missing BASE_URL")
+        if not self.api_key:
+            raise ValueError("missing API_KEY")
 
         payload = self._payload(messages, system_prompt, tools)
         payload["stream"] = True
-        self._dump_payload_debug(payload=payload, tools=tools, stream=True)
+        if not self._is_anthropic_messages_api():
+            payload["stream_options"] = {"include_usage": True}
 
         resp = requests.post(
             self._request_url(),
@@ -278,8 +428,11 @@ class LLMClient:
 
         resp.encoding = "utf-8"
         if self._is_anthropic_messages_api():
-            return self._parse_stream_anthropic(resp, on_text)
-        return self._parse_stream_openai(resp, on_text)
+            result = self._parse_stream_anthropic(resp, on_text)
+        else:
+            result = self._parse_stream_openai(resp, on_text)
+        self._dump_payload_debug(payload=payload, tools=tools, stream=True, usage=result.usage, used_tools=result.tool_calls)
+        return result
 
     def _parse_stream_anthropic(
         self, resp: requests.Response, on_text: Callable[[str], None],
@@ -288,17 +441,24 @@ class LLMClient:
         tool_calls: list[ToolCall] = []
         current_tool_name = ""
         current_tool_json = ""
+        input_tokens: int | None = None
+        output_tokens: int | None = None
 
         for line in resp.iter_lines(decode_unicode=True):
             if not line or not line.startswith("data: "):
                 continue
             try:
                 data = json.loads(line[6:])
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, ValueError):
                 continue
             evt = data.get("type", "")
 
-            if evt == "content_block_start":
+            if evt == "message_start":
+                msg = data.get("message", {})
+                usage = msg.get("usage", {})
+                if isinstance(usage.get("input_tokens"), int):
+                    input_tokens = usage["input_tokens"]
+            elif evt == "content_block_start":
                 block = data.get("content_block", {})
                 if block.get("type") == "tool_use":
                     current_tool_name = block.get("name", "")
@@ -321,14 +481,23 @@ class LLMClient:
                     tool_calls.append(ToolCall(name=current_tool_name, input=args))
                     current_tool_name = ""
                     current_tool_json = ""
+            elif evt == "message_delta":
+                usage = data.get("usage", {})
+                if isinstance(usage.get("output_tokens"), int):
+                    output_tokens = usage["output_tokens"]
 
-        return LLMResponse(text="".join(text_parts).strip(), tool_calls=tool_calls)
+        usage_info = None
+        if input_tokens is not None or output_tokens is not None:
+            usage_info = UsageInfo(input_tokens=input_tokens, output_tokens=output_tokens)
+
+        return LLMResponse(text="".join(text_parts).strip(), tool_calls=tool_calls, usage=usage_info)
 
     def _parse_stream_openai(
         self, resp: requests.Response, on_text: Callable[[str], None],
     ) -> LLMResponse:
         text_parts: list[str] = []
         tool_acc: dict[int, dict[str, str]] = {}
+        usage_info: UsageInfo | None = None
 
         for line in resp.iter_lines(decode_unicode=True):
             if not line or not line.startswith("data: "):
@@ -338,8 +507,19 @@ class LLMClient:
                 break
             try:
                 data = json.loads(data_str)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, ValueError):
                 continue
+
+            raw_usage = data.get("usage")
+            if isinstance(raw_usage, dict):
+                inp = raw_usage.get("prompt_tokens")
+                out = raw_usage.get("completion_tokens")
+                if inp is not None or out is not None:
+                    usage_info = UsageInfo(
+                        input_tokens=int(inp) if inp is not None else None,
+                        output_tokens=int(out) if out is not None else None,
+                    )
+
             choices = data.get("choices") or []
             if not choices:
                 continue
@@ -366,8 +546,7 @@ class LLMClient:
                 args = {}
             tool_calls.append(ToolCall(name=v["name"], input=args))
 
-        return LLMResponse(text="".join(text_parts).strip(), tool_calls=tool_calls)
-
+        return LLMResponse(text="".join(text_parts).strip(), tool_calls=tool_calls, usage=usage_info)
 
 class VisionClient:
 
@@ -388,7 +567,9 @@ class VisionClient:
         return self.base_url.endswith("/messages")
 
     def _request_url(self) -> str:
-        if self._is_anthropic() or self.base_url.endswith("/chat/completions"):
+        if self._is_anthropic():
+            return self.base_url
+        if self.base_url.endswith("/chat/completions"):
             return self.base_url
         return f"{self.base_url}/chat/completions"
 

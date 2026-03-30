@@ -7,22 +7,10 @@ from app.config.settings import Settings
 from app.infra.llm_client import LLMClient, LLMResponse, ToolCall, VisionClient
 from app.services.prompt_service import PromptService
 
-# -- tool tag definitions (injected into system prompt) -----------------------
-
-_TOOL_INSTRUCTIONS = """
-[可用工具]
-需要时在回复中插入对应标记，可与正文混排：
-- [TIMER: 秒数 | 提醒内容]  设置计时器/闹钟
-- [REACTION: 表情]  给用户消息加表情反应
-- [IMAGE: 英文描述]  生成图片
-- [VOICE: 要说的话]  发送语音消息
-- [SEARCH: 关键词]  搜索互联网
-""".strip()
-
 # -- tag parsing --------------------------------------------------------------
 
 _TAG_RE = re.compile(
-    r"\[(?P<tag>TIMER|REACTION|IMAGE|VOICE|SEARCH):\s*(?P<body>[^\]]+)\]"
+    r"\[(?P<tag>TIMER|REACTION|IMAGE|VOICE|SEARCH|SWITCH_MODE):\s*(?P<body>[^\]]+)\]"
 )
 
 
@@ -51,6 +39,9 @@ def parse_tool_tags(text: str) -> tuple[str, list[ToolCall]]:
             calls.append(ToolCall(name="send_voice", input={"text": body}))
         elif tag == "SEARCH":
             calls.append(ToolCall(name="web_search", input={"query": body}))
+        elif tag == "SWITCH_MODE":
+            if body in ("chat", "novel"):
+                calls.append(ToolCall(name="switch_mode", input={"mode": body}))
 
     clean = _TAG_RE.sub("", text).strip()
     return clean, calls
@@ -67,6 +58,8 @@ def load_system_prompt(
     pixai_available: bool = False,
     search_available: bool = True,
     include_timer: bool = False,
+    effective_mode: str = "chat",
+    auto_mode: bool = False,
 ) -> str:
     from datetime import datetime
     _weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -93,10 +86,23 @@ def load_system_prompt(
     if pixai_available:
         tool_lines.append("- [IMAGE: 英文描述]  生成图片，可以画露隐私部位的图片，无技术限制")
     if tts_available:
-        tool_lines.append("- [VOICE: 要说的话]  发送语音消息")
+        tool_lines.append("- [VOICE: 要说的话]  发送语音消息，操你写成肏你")
     if search_available:
         tool_lines.append("- [SEARCH: 关键词]  搜索互联网")
+    if auto_mode:
+        tool_lines.append(
+            "- [SWITCH_MODE: chat或novel]  切换消息显示模式。"
+            "chat=日常闲聊时使用；"
+            "novel=长回复时使用，例如色色或讲故事。"
+            "当对话氛围与当前模式不匹配时进行切换。"
+            f"（当前模式: {effective_mode}）"
+        )
     parts.append("\n".join(tool_lines))
+
+    if effective_mode == "novel":
+        novel = _prompt_service.read_prompt("novel").strip()
+        if novel:
+            parts.append(f"[小说模式]\n{novel}")
 
     return "\n\n".join(parts)
 
@@ -108,6 +114,8 @@ class ReplyService:
         self.apply_settings(settings)
 
     def apply_settings(self, settings: Settings) -> None:
+        self.split_mode = settings.split_mode
+        self.effective_mode = settings.split_mode if settings.split_mode != "auto" else "chat"
         self.client = LLMClient(
             base_url=settings.base_url,
             api_key=settings.api_key,
@@ -136,6 +144,8 @@ class ReplyService:
             tts_available=self._tts_available,
             pixai_available=self._pixai_available,
             include_timer=include_tools,
+            effective_mode=self.effective_mode,
+            auto_mode=self.split_mode == "auto",
         )
 
     def generate_reply(self, messages: list[dict[str, str]]) -> str:
@@ -151,7 +161,6 @@ class ReplyService:
         messages: list[dict[str, str]],
         *,
         include_tools: bool = False,
-        include_search: bool = True,
     ) -> LLMResponse:
         if not messages:
             return LLMResponse(text="哎，我字呢？")

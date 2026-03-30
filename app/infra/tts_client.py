@@ -8,7 +8,7 @@ import httpx
 log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "speech-02-hd"
-API_URL = "https://api.minimax.io/v1/t2a_v2"
+API_URL = "https://api.minimax.chat/v1/t2a_v2"
 
 
 def synthesize(
@@ -60,9 +60,16 @@ def synthesize(
         resp.raise_for_status()
         data = resp.json()
 
+        # check API-level error
+        base_resp = data.get("base_resp", {})
+        status_code = base_resp.get("status_code", 0)
+        if status_code != 0:
+            log.error("tts: API error code=%s msg=%s", status_code, base_resp.get("status_msg", ""))
+            return None
+
         hex_audio = data.get("data", {}).get("audio", "")
         if not hex_audio:
-            log.warning("tts: empty audio in response")
+            log.warning("tts: empty audio in response, full keys=%s", list(data.keys()))
             return None
         return bytes.fromhex(hex_audio)
     except Exception:
