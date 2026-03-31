@@ -45,7 +45,6 @@ class LLMClient:
         self.api_key = api_key
         self.model = model
         self.show_api_payload = show_api_payload
-        self.debug_context_meta: dict[str, Any] = {}
 
     def _is_anthropic_messages_api(self) -> bool:
         return self.base_url.endswith("/messages")
@@ -66,93 +65,6 @@ class LLMClient:
         if self._is_anthropic_messages_api():
             headers["anthropic-version"] = self.ANTHROPIC_VERSION
         return headers
-
-    def _can_count_tokens(self) -> bool:
-        return "claude" in self.model.lower()
-
-    def _count_tokens_candidates(self) -> list[str]:
-        base = self.base_url.rstrip("/")
-        candidates: list[str] = []
-        if self._is_anthropic_messages_api():
-            candidates.append(f"{base}/count_tokens")
-        else:
-            if base.endswith("/chat/completions"):
-                prefix = base[: -len("/chat/completions")]
-                candidates.extend(
-                    [
-                        f"{prefix}/messages/count_tokens",
-                        f"{prefix}/count_tokens",
-                    ]
-                )
-            else:
-                candidates.extend(
-                    [
-                        f"{base}/messages/count_tokens",
-                        f"{base}/count_tokens",
-                    ]
-                )
-        seen: set[str] = set()
-        out: list[str] = []
-        for item in candidates:
-            if item not in seen:
-                seen.add(item)
-                out.append(item)
-        return out
-
-    @staticmethod
-    def _tiktoken_estimate(payload: dict[str, Any]) -> int:
-        import tiktoken
-        enc = tiktoken.get_encoding("cl100k_base")
-        text_parts: list[str] = []
-        system = payload.get("system", "")
-        if isinstance(system, str) and system:
-            text_parts.append(system)
-        for msg in payload.get("messages", []):
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                text_parts.append(content)
-            elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("text"):
-                        text_parts.append(block["text"])
-        if payload.get("tools"):
-            text_parts.append(json.dumps(payload["tools"], ensure_ascii=False))
-        raw_count = len(enc.encode("\n".join(text_parts)))
-        return int(raw_count * 1.243)
-
-    def _count_tokens(self, payload: dict[str, Any]) -> tuple[int | None, dict[str, Any]]:
-        if not self._can_count_tokens():
-            estimate = self._tiktoken_estimate(payload)
-            return estimate, {"source": "tiktoken_estimate", "note": "model_not_claude"}
-
-        count_payload: dict[str, Any] = {
-            "model": payload.get("model", self.model),
-            "messages": payload.get("messages", []),
-        }
-        if payload.get("system"):
-            count_payload["system"] = payload["system"]
-        if payload.get("tools"):
-            count_payload["tools"] = payload["tools"]
-
-        for url in self._count_tokens_candidates():
-            try:
-                resp = requests.post(
-                    url,
-                    headers=self._headers(),
-                    json=count_payload,
-                    timeout=30,
-                )
-                if resp.status_code >= 400:
-                    continue
-                data = resp.json()
-                tokens = data.get("input_tokens")
-                if isinstance(tokens, int) and tokens >= 0:
-                    return tokens, {"source": "anthropic_count_tokens", "url": url}
-            except Exception:
-                continue
-
-        estimate = self._tiktoken_estimate(payload)
-        return estimate, {"source": "tiktoken_estimate", "note": "api_count_tokens_unavailable"}
 
     def _dump_payload_debug(
         self,
@@ -188,8 +100,6 @@ class LLMClient:
                 text = json.dumps(content, ensure_ascii=False, indent=2)
             history_parts.append(f"[{role}]\n{text}")
 
-        total_estimated_tokens, total_meta = self._count_tokens(payload)
-
         if used_tools:
             used_tools_text = "\n".join(
                 f"{tc.name}: {json.dumps(tc.input, ensure_ascii=False)}" for tc in used_tools
@@ -208,14 +118,6 @@ class LLMClient:
         parts = [
             "=======请求时间=======",
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "=======实时聊天记录预测Token=======",
-            json.dumps(self.debug_context_meta, ensure_ascii=False, indent=2) if self.debug_context_meta else "（无）",
-            "=======总预测Token=======",
-            json.dumps(
-                {"estimated_tokens": total_estimated_tokens, **total_meta},
-                ensure_ascii=False,
-                indent=2,
-            ),
             "=======实际Token=======",
             actual_token_text,
             "=======系统提示词=======",
@@ -231,7 +133,6 @@ class LLMClient:
         with self.DEBUG_PAYLOAD_PATH.open("w", encoding="utf-8") as f:
             f.write("\n".join(parts))
             f.write("\n")
-        self.debug_context_meta = {}
 
     def _payload(
         self,
@@ -379,7 +280,17 @@ class LLMClient:
             snippet = resp.text[:200].replace("\n", " ")
             raise RuntimeError(f"llm http {resp.status_code}: {snippet}")
 
-        return resp.json(), payload
+        resp_json = resp.json()
+        self._dump_raw(payload, resp_json)
+        return resp_json, payload
+
+    def _dump_raw(self, request: dict, response: dict) -> None:
+        raw_dir = Path(__file__).resolve().parents[2] / "data" / "debug"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        dump = {"request": request, "response": response}
+        (raw_dir / "raw_api.json").write_text(
+            json.dumps(dump, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+        )
 
     def generate(self, messages: list[dict[str, str]], system_prompt: str) -> str:
         data, payload = self._do_request(messages, system_prompt)
@@ -414,6 +325,8 @@ class LLMClient:
         payload["stream"] = True
         if not self._is_anthropic_messages_api():
             payload["stream_options"] = {"include_usage": True}
+
+        self._dump_raw(payload, {"note": "streaming - response not captured"})
 
         resp = requests.post(
             self._request_url(),

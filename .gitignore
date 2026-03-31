@@ -8,4 +8,5 @@ prompts/userinfo.txt
 .claude/
 .venv/
 CLAUDE.md
+AGENTS.md
 docs/

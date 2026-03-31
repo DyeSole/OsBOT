@@ -110,10 +110,10 @@ class ProactiveMixin:
     ) -> None:
         """Shared path: load recent history, append *system_note*, call LLM, send reply, handle tools."""
         recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
-        history_block = self.history_store.render_entries(recent) if recent else ""
-        transcript = f"{history_block}\n{system_note}".strip() if history_block else system_note
+        from datetime import datetime
+        system_entry = {"role": "user", "username": "系统", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "content": system_note}
+        messages = self.history_store.entries_to_messages(recent + [system_entry])
 
-        messages = [{"role": "user", "content": transcript}]
         fire_ts = time.time() if check_new_message else 0.0
         try:
             async with channel.typing():
@@ -125,6 +125,9 @@ class ProactiveMixin:
             return
 
         reply = (response.text or "").strip()
+        suppress_visible_reply = self._should_suppress_visible_reply(response.tool_calls)
+        if suppress_visible_reply:
+            reply = ""
         suppressed = False
         if not reply:
             suppressed = True

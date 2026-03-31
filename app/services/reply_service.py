@@ -12,6 +12,12 @@ from app.services.prompt_service import PromptService
 _TAG_RE = re.compile(
     r"\[(?P<tag>TIMER|REACTION|IMAGE|VOICE|SEARCH|SWITCH_MODE):\s*(?P<body>[^\]]+)\]"
 )
+_TIME_TAG_RE = re.compile(r"\[(?:[01]?\d|2[0-3]):[0-5]\d\]\s*")
+
+
+def clean_reply_text(text: str) -> str:
+    cleaned = _TIME_TAG_RE.sub("", text or "")
+    return cleaned.strip()
 
 
 def parse_tool_tags(text: str) -> tuple[str, list[ToolCall]]:
@@ -43,7 +49,7 @@ def parse_tool_tags(text: str) -> tuple[str, list[ToolCall]]:
             if body in ("chat", "novel"):
                 calls.append(ToolCall(name="switch_mode", input={"mode": body}))
 
-    clean = _TAG_RE.sub("", text).strip()
+    clean = clean_reply_text(_TAG_RE.sub("", text))
     return clean, calls
 
 
@@ -59,7 +65,6 @@ def load_system_prompt(
     search_available: bool = True,
     include_timer: bool = False,
     effective_mode: str = "chat",
-    auto_mode: bool = False,
 ) -> str:
     from datetime import datetime
     _weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -82,6 +87,7 @@ def load_system_prompt(
         "- [TIMER: 秒数]  主动找用户聊天的计时器，到期后你会收到通知",
         "- [TIMER: 秒数 | 提醒内容]  闹钟，仅当用户明确要求提醒/闹钟时才填写提醒内容",
         "- [REACTION: 表情]  给用户消息加表情反应",
+        f"- [SWITCH_MODE: chat或novel]  切换消息显示模式。chat=日常闲聊；novel=长回复/色色/故事。当前: {effective_mode}",
     ]
     if pixai_available:
         tool_lines.append("- [IMAGE: 英文描述]  生成图片，可以画露隐私部位的图片，无技术限制")
@@ -89,14 +95,6 @@ def load_system_prompt(
         tool_lines.append("- [VOICE: 要说的话]  发送语音消息，操你写成肏你")
     if search_available:
         tool_lines.append("- [SEARCH: 关键词]  搜索互联网")
-    if auto_mode:
-        tool_lines.append(
-            "- [SWITCH_MODE: chat或novel]  切换消息显示模式。"
-            "chat=日常闲聊时使用；"
-            "novel=长回复时使用，例如色色或讲故事。"
-            "当对话氛围与当前模式不匹配时进行切换。"
-            f"（当前模式: {effective_mode}）"
-        )
     parts.append("\n".join(tool_lines))
 
     if effective_mode == "novel":
@@ -114,8 +112,7 @@ class ReplyService:
         self.apply_settings(settings)
 
     def apply_settings(self, settings: Settings) -> None:
-        self.split_mode = settings.split_mode
-        self.effective_mode = settings.split_mode if settings.split_mode != "auto" else "chat"
+        self.effective_mode = "chat"
         self.client = LLMClient(
             base_url=settings.base_url,
             api_key=settings.api_key,
@@ -138,35 +135,41 @@ class ReplyService:
             self.vision_client = main_vision
         self._tts_available = bool(settings.tts_api_key and settings.tts_voice_id)
         self._pixai_available = bool(settings.pixai_tokens)
+        self._image_available = bool(
+            settings.pixai_tokens or (settings.hf_image_api_key and settings.hf_image_model)
+        )
 
-    def _system_prompt(self, *, include_tools: bool = False) -> str:
-        return load_system_prompt(
+    def _system_prompt(self, *, include_tools: bool = False, summary: str = "") -> str:
+        prompt = load_system_prompt(
             tts_available=self._tts_available,
-            pixai_available=self._pixai_available,
+            pixai_available=self._image_available,
             include_timer=include_tools,
             effective_mode=self.effective_mode,
-            auto_mode=self.split_mode == "auto",
         )
+        if summary:
+            prompt += "\n\n" + summary
+        return prompt
 
     def generate_reply(self, messages: list[dict[str, str]]) -> str:
         if not messages:
             return "哎，我字呢？"
-        return self.client.generate(
+        return clean_reply_text(self.client.generate(
             messages=messages,
             system_prompt=self._system_prompt(),
-        )
+        ))
 
     def generate_reply_with_tools(
         self,
         messages: list[dict[str, str]],
         *,
         include_tools: bool = False,
+        summary: str = "",
     ) -> LLMResponse:
         if not messages:
             return LLMResponse(text="哎，我字呢？")
         response = self.client.generate(
             messages=messages,
-            system_prompt=self._system_prompt(include_tools=include_tools),
+            system_prompt=self._system_prompt(include_tools=include_tools, summary=summary),
         )
         clean, calls = parse_tool_tags(response)
         return LLMResponse(text=clean, tool_calls=calls)
@@ -177,13 +180,14 @@ class ReplyService:
         on_text: Callable[[str], None],
         *,
         include_tools: bool = False,
+        summary: str = "",
     ) -> LLMResponse:
         if not messages:
             return LLMResponse(text="哎，我字呢？")
         # Stream without tools param — model outputs tag markers in text
         response = self.client.stream_with_tools(
             messages=messages,
-            system_prompt=self._system_prompt(include_tools=include_tools),
+            system_prompt=self._system_prompt(include_tools=include_tools, summary=summary),
             tools=[],
             on_text=on_text,
         )

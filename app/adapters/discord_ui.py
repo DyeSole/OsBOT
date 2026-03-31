@@ -134,29 +134,26 @@ TYPING_NUDGE_FIELDS = [
     FieldDef("TYPING_NUDGE_SECONDS", "表情/打字触发等待时间（秒）", max_length=10),
 ]
 
-CONTEXT_ENTRIES_FIELDS = [
-    FieldDef("CONTEXT_ENTRIES", "主动/闹钟/吃醋等场景的上下文条数", max_length=5, placeholder="默认 20"),
-]
-
-
 # ============================================================================
 #  Special modals (prompt editing, dynamic slots)
 # ============================================================================
 
 KINK_SEPARATOR = "\n---KINK---\n"
+BACK_BUTTON_LABEL = "　　　　　　返回　　　　　　"
 
 
-class SoulEditModal(discord.ui.Modal, title="编辑人格 & Kink"):
+class SoulEditModal(discord.ui.Modal, title="编辑 Bot 信息"):
     def __init__(self, bot: DiscordBot):
         super().__init__()
         self.bot = bot
         raw = bot.prompt_service.read_prompt("soul")
+        novel_raw = bot.prompt_service.read_prompt("novel")
         if KINK_SEPARATOR in raw:
             soul_part, kink_part = raw.split(KINK_SEPARATOR, 1)
         else:
             soul_part, kink_part = raw, ""
         self.soul = discord.ui.TextInput(
-            label="人格提示词",
+            label="Bot 信息",
             default=soul_part.strip()[:4000],
             style=discord.TextStyle.paragraph,
             required=True,
@@ -169,16 +166,25 @@ class SoulEditModal(discord.ui.Modal, title="编辑人格 & Kink"):
             required=False,
             max_length=4000,
         )
+        self.novel = discord.ui.TextInput(
+            label="小说模式提示词",
+            default=novel_raw[:4000],
+            style=discord.TextStyle.paragraph,
+            required=False,
+            max_length=4000,
+        )
         self.add_item(self.soul)
         self.add_item(self.kink)
+        self.add_item(self.novel)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         soul_text = self.soul.value.strip()
         kink_text = self.kink.value.strip()
         combined = f"{soul_text}{KINK_SEPARATOR}{kink_text}" if kink_text else soul_text
         self.bot.prompt_service.write_prompt(target="soul", content=combined)
+        self.bot.prompt_service.write_prompt(target="novel", content=self.novel.value)
         await interaction.response.edit_message(
-            content="提示词编辑\n\n人格 & Kink 已保存，下一次调用会自动生效。",
+            content="提示词编辑\n\nBot 信息、Kink 和小说模式提示词已保存，下一次调用会自动生效。",
             view=PromptToolboxView(self.bot),
         )
 
@@ -324,6 +330,39 @@ class VisionModal(discord.ui.Modal, title="识图 API 配置"):
         self.bot.apply_settings(load_settings())
         await interaction.response.edit_message(
             content="API 配置\n\n识图 API 配置已保存，立即生效。",
+            view=ApiToolboxView(self.bot),
+        )
+
+
+class HFImageModal(discord.ui.Modal, title="Hugging Face 画图 API"):
+    def __init__(self, bot: DiscordBot):
+        super().__init__()
+        self.bot = bot
+        s = bot.settings
+        self.api_key = discord.ui.TextInput(
+            label="HF_IMAGE_API_KEY",
+            default=s.hf_image_api_key or "",
+            required=False,
+            placeholder="Hugging Face Access Token",
+        )
+        self.add_item(self.api_key)
+        self.model = discord.ui.TextInput(
+            label="HF_IMAGE_MODEL",
+            default=s.hf_image_model or "",
+            required=False,
+            max_length=200,
+            placeholder="black-forest-labs/FLUX.1-dev",
+        )
+        self.add_item(self.model)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        save_config({
+            "HF_IMAGE_API_KEY": self.api_key.value.strip(),
+            "HF_IMAGE_MODEL": self.model.value.strip(),
+        })
+        self.bot.apply_settings(load_settings())
+        await interaction.response.edit_message(
+            content="API 配置\n\nHugging Face 画图 API 配置已保存，立即生效。",
             view=ApiToolboxView(self.bot),
         )
 
@@ -482,17 +521,21 @@ class ApiToolboxView(BotView):
     async def compression_api(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(CompressionModal(self.bot))
 
-    @discord.ui.button(label="画图 API", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="HF 画图 API", style=discord.ButtonStyle.primary, row=1)
+    async def hf_image_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(HFImageModal(self.bot))
+
+    @discord.ui.button(label="PixAI 画图 API", style=discord.ButtonStyle.primary, row=2)
     async def pixai_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(PixAITokenModal(self.bot))
 
-    @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label=BACK_BUTTON_LABEL, style=discord.ButtonStyle.secondary, row=3)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(content="工具箱", view=ToolboxView(self.bot))
 
 
 class PromptToolboxView(BotView):
-    @discord.ui.button(label="人格 & Kink", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="bot信息", style=discord.ButtonStyle.primary)
     async def edit_soul(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(SoulEditModal(self.bot))
 
@@ -500,103 +543,59 @@ class PromptToolboxView(BotView):
     async def edit_userinfo(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(PromptEditModal(self.bot, target="userinfo", title="编辑用户信息"))
 
-    @discord.ui.button(label="小说模式提示词", style=discord.ButtonStyle.primary)
-    async def edit_novel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(PromptEditModal(self.bot, target="novel", title="编辑小说模式提示词"))
-
-    @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label=BACK_BUTTON_LABEL, style=discord.ButtonStyle.secondary, row=1)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(content="工具箱", view=ToolboxView(self.bot))
 
 
 class ProactiveToolboxView(BotView):
-    @discord.ui.button(label="聊天主动", style=discord.ButtonStyle.primary)
+    def __init__(self, bot: DiscordBot):
+        super().__init__(bot)
+        if bot.settings.typing_wait:
+            self.typing_wait.label = "即时回复 开"
+            self.typing_wait.style = discord.ButtonStyle.success
+        else:
+            self.typing_wait.label = "即时回复 关"
+            self.typing_wait.style = discord.ButtonStyle.secondary
+
+    @discord.ui.button(label="即时回复", style=discord.ButtonStyle.primary, row=0)
+    async def typing_wait(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        enabled = not self.bot.settings.typing_wait
+        save_config({"TYPING_WAIT": "1" if enabled else "0"})
+        self.bot.apply_settings(load_settings())
+        state = "开启" if enabled else "关闭"
+        await interaction.response.edit_message(
+            content=f"主动消息\n\n即时回复已{state}。",
+            view=ProactiveToolboxView(self.bot),
+        )
+
+    @discord.ui.button(label="聊天主动", style=discord.ButtonStyle.primary, row=0)
     async def chat_proactive(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(ProactiveModal(self.bot))
 
-    @discord.ui.button(label="上线时间", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="表情打字", style=discord.ButtonStyle.primary, row=0)
+    async def typing_nudge(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(ConfigModal(
+            self.bot, fields=TYPING_NUDGE_FIELDS, title="表情打字 设置",
+            confirm="主动消息\n\n表情打字等待时间已保存，立即生效。", return_view=ProactiveToolboxView,
+        ))
+
+    @discord.ui.button(label="上线监听", style=discord.ButtonStyle.primary, row=1)
     async def watch_online_time(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(WatchOnlineTimeModal(self.bot))
 
-    @discord.ui.button(label="频道偷窥", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="频道偷窥", style=discord.ButtonStyle.primary, row=1)
     async def jealousy_channels(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(JealousyChannelsModal(self.bot))
 
-    @discord.ui.button(label="表情|打字", style=discord.ButtonStyle.secondary)
-    async def typing_nudge(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(ConfigModal(
-            self.bot, fields=TYPING_NUDGE_FIELDS, title="表情|打字 设置",
-            confirm="主动消息\n\n表情|打字等待时间已保存，立即生效。", return_view=ProactiveToolboxView,
-        ))
-
-    @discord.ui.button(label="静默时间", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="静默时间", style=discord.ButtonStyle.primary, row=1)
     async def quiet_hours(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(ConfigModal(
             self.bot, fields=QUIET_HOURS_FIELDS, title="静默时间设置",
             confirm="主动消息\n\n静默时间配置已保存，立即生效。", return_view=ProactiveToolboxView,
         ))
 
-    @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary)
-    async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.edit_message(content="工具箱", view=ToolboxView(self.bot))
-
-
-class ChatControlView(BotView):
-    def __init__(self, bot: DiscordBot):
-        super().__init__(bot)
-
-        mode = bot.settings.split_mode
-        mode_labels = {"chat": "聊天模式", "novel": "小说模式", "auto": "LLM模式"}
-        mode_styles = {
-            "chat": discord.ButtonStyle.primary,
-            "novel": discord.ButtonStyle.success,
-            "auto": discord.ButtonStyle.secondary,
-        }
-        self.split_btn = discord.ui.Button(
-            label=mode_labels.get(mode, "LLM模式"),
-            style=mode_styles.get(mode, discord.ButtonStyle.secondary),
-        )
-        self.split_btn.callback = self._toggle_split_mode
-        self.add_item(self.split_btn)
-
-        tw = bot.settings.typing_wait
-        self.tw_btn = discord.ui.Button(
-            label="等待输入" if tw else "即时回复",
-            style=discord.ButtonStyle.primary if tw else discord.ButtonStyle.success,
-        )
-        self.tw_btn.callback = self._toggle_typing_wait
-        self.add_item(self.tw_btn)
-
-    async def _toggle_split_mode(self, interaction: discord.Interaction) -> None:
-        cycle = ["chat", "novel", "auto"]
-        current = self.bot.settings.split_mode
-        idx = cycle.index(current) if current in cycle else 0
-        new_mode = cycle[(idx + 1) % len(cycle)]
-        save_config({"SPLIT_MODE": new_mode})
-        self.bot.apply_settings(load_settings())
-        mode_labels = {"chat": "聊天模式", "novel": "小说模式", "auto": "LLM模式"}
-        await interaction.response.edit_message(
-            content=f"聊天控制\n\n已切换为{mode_labels[new_mode]}",
-            view=ChatControlView(self.bot),
-        )
-
-    async def _toggle_typing_wait(self, interaction: discord.Interaction) -> None:
-        new_val = not self.bot.settings.typing_wait
-        save_config({"TYPING_WAIT": "1" if new_val else "0"})
-        self.bot.apply_settings(load_settings())
-        await interaction.response.edit_message(
-            content=f"聊天控制\n\n已切换为{'等待输入' if new_val else '即时回复'}",
-            view=ChatControlView(self.bot),
-        )
-
-    @discord.ui.button(label="上下文条数", style=discord.ButtonStyle.secondary, row=0)
-    async def context_entries(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(ConfigModal(
-            self.bot, fields=CONTEXT_ENTRIES_FIELDS, title="上下文条数",
-            confirm="聊天控制\n\n上下文条数已保存，立即生效。", return_view=ChatControlView,
-        ))
-
-    @discord.ui.button(label="返回", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label=BACK_BUTTON_LABEL, style=discord.ButtonStyle.secondary, row=2)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(content="工具箱", view=ToolboxView(self.bot))
 
@@ -606,14 +605,10 @@ class ToolboxView(BotView):
     async def api_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(content="API 配置", view=ApiToolboxView(self.bot))
 
+    @discord.ui.button(label="提示词编辑", style=discord.ButtonStyle.primary)
+    async def prompts(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(content="提示词编辑", view=PromptToolboxView(self.bot))
+
     @discord.ui.button(label="主动消息", style=discord.ButtonStyle.primary)
     async def proactive(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(content="主动消息", view=ProactiveToolboxView(self.bot))
-
-    @discord.ui.button(label="聊天控制", style=discord.ButtonStyle.primary)
-    async def chat_control(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.edit_message(content="聊天控制", view=ChatControlView(self.bot))
-
-    @discord.ui.button(label="提示词编辑", style=discord.ButtonStyle.secondary)
-    async def prompts(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.edit_message(content="提示词编辑", view=PromptToolboxView(self.bot))

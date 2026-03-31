@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 _TAG_RE = re.compile(r"\[(?:TIMER|REACTION|IMAGE|VOICE|SEARCH):\s*[^\]]+\]")
 _SWITCH_MODE_RE = re.compile(r"\[SWITCH_MODE:\s*(chat|novel)\]")
+_TIME_TAG_RE = re.compile(r"\[(?:[01]?\d|2[0-3]):[0-5]\d\]\s*")
 
 
 class DispatchMixin:
@@ -32,6 +33,24 @@ class DispatchMixin:
         parts = re.split(r"\n+", stripped)
         out = [p.strip() for p in parts if p and p.strip()]
         return out or [stripped]
+
+    @staticmethod
+    def _chunk_text(text: str, *, limit: int = 2000) -> list[str]:
+        stripped = (text or "").strip()
+        if not stripped:
+            return []
+        return [stripped[i:i + limit] for i in range(0, len(stripped), limit)]
+
+    @staticmethod
+    def _should_suppress_visible_reply(tool_calls: list[object]) -> bool:
+        tool_names = {
+            getattr(tc, "name", "")
+            for tc in tool_calls
+            if getattr(tc, "name", "")
+        }
+        silent_tools = {"add_reaction", "generate_image", "send_voice"}
+        blocking_tools = {"set_timer", "web_search"}
+        return bool(tool_names & silent_tools) and not bool(tool_names & blocking_tools)
 
     # -- sending helpers ------------------------------------------------------
 
@@ -79,6 +98,8 @@ class DispatchMixin:
                     if m:
                         detected_mode = m.group(1)
                         hold = ""  # swallow the tag
+                    elif _TIME_TAG_RE.fullmatch(hold):
+                        hold = ""  # swallow llm-added [HH:MM] markers
                     elif _TAG_RE.fullmatch(hold):
                         hold = ""  # swallow the tag
                     else:
@@ -102,16 +123,37 @@ class DispatchMixin:
         messages: list[dict[str, str]],
         *,
         include_tools: bool = False,
+        summary: str = "",
     ) -> tuple[LLMResponse, list[discord.Message]]:
         from app.infra.llm_client import LLMResponse
 
         q: _queue.Queue[tuple[str, object]] = _queue.Queue()
+
+        async def _sync_novel_messages(
+            full_text: str,
+            novel_msgs: list[discord.Message],
+            sent_msgs: list[discord.Message],
+        ) -> None:
+            chunks = self._chunk_text(full_text)
+            if not chunks:
+                return
+            for idx, chunk in enumerate(chunks):
+                if idx < len(novel_msgs):
+                    await novel_msgs[idx].edit(content=chunk)
+                else:
+                    msg = await channel.send(
+                        chunk,
+                        allowed_mentions=AllowedMentions.none(),
+                    )
+                    novel_msgs.append(msg)
+                    sent_msgs.append(msg)
 
         def _produce() -> None:
             try:
                 resp = self.reply_service.stream_reply_with_tools(
                     messages, lambda chunk: q.put(("text", chunk)),
                     include_tools=include_tools,
+                    summary=summary,
                 )
                 q.put(("done", resp))
             except Exception as exc:  # noqa: BLE001
@@ -125,7 +167,7 @@ class DispatchMixin:
         is_first = True
         sent_msgs: list[discord.Message] = []
         is_novel = self.effective_split_mode == "novel"
-        novel_msg: discord.Message | None = None
+        novel_msgs: list[discord.Message] = []
         novel_full = ""
         novel_last_edit = 0.0
 
@@ -140,7 +182,7 @@ class DispatchMixin:
                 filtered, tag_hold, detected_mode = self._filter_tags(value, tag_hold)
                 if detected_mode:
                     is_novel = detected_mode == "novel"
-                    if is_novel and not novel_msg:
+                    if is_novel and not novel_msgs:
                         # switching to novel mid-stream: move buffered text into novel_full
                         novel_full = buffer
                 if not filtered:
@@ -153,20 +195,7 @@ class DispatchMixin:
                         display = novel_full.strip()
                         if display:
                             try:
-                                if novel_msg is None:
-                                    novel_msg = await channel.send(
-                                        display, allowed_mentions=AllowedMentions.none(),
-                                    )
-                                    sent_msgs.append(novel_msg)
-                                elif len(display) <= 2000:
-                                    await novel_msg.edit(content=display)
-                                else:
-                                    novel_full = filtered
-                                    novel_msg = await channel.send(
-                                        filtered.strip() or "...",
-                                        allowed_mentions=AllowedMentions.none(),
-                                    )
-                                    sent_msgs.append(novel_msg)
+                                await _sync_novel_messages(display, novel_msgs, sent_msgs)
                             except Exception:  # noqa: BLE001
                                 pass
                             novel_last_edit = now
@@ -195,13 +224,7 @@ class DispatchMixin:
                     display = novel_full.strip()
                     if display:
                         try:
-                            if novel_msg is None:
-                                novel_msg = await channel.send(
-                                    display, allowed_mentions=AllowedMentions.none(),
-                                )
-                                sent_msgs.append(novel_msg)
-                            elif len(display) <= 2000:
-                                await novel_msg.edit(content=display)
+                            await _sync_novel_messages(display, novel_msgs, sent_msgs)
                         except Exception:  # noqa: BLE001
                             pass
                 else:
@@ -225,14 +248,21 @@ class DispatchMixin:
         channel: discord.abc.Messageable,
         messages: list[dict[str, str]],
         anchor_message: discord.Message | None,
+        *,
+        summary: str = "",
     ) -> None:
         """Shared tail: stream reply, save, handle tools, schedule proactive."""
         try:
             await channel.typing()
             response, sent_msgs = await self._stream_and_send(
-                anchor_message, channel, messages,
+                anchor_message, channel, messages, summary=summary,
             )
             reply = (response.text or "").strip()
+            suppress_visible_reply = self._should_suppress_visible_reply(response.tool_calls)
+            if suppress_visible_reply and sent_msgs:
+                await self._delete_messages(sent_msgs)
+                sent_msgs = []
+                reply = ""
             has_search = any(tc.name == "web_search" for tc in response.tool_calls)
             if reply and not has_search:
                 self._save_bot_reply(channel_id, reply)
@@ -242,6 +272,7 @@ class DispatchMixin:
                 channel_id,
                 channel,
                 prior_messages=messages,
+                prior_summary=summary,
                 edit_msg=edit_msg,
                 had_reply=bool(reply),
                 source_message=anchor_message,
@@ -282,21 +313,14 @@ class DispatchMixin:
         if not merged_text:
             return
 
-        pending_entry = {
-            "role": "user",
-            "username": pending.user_label,
-            "time": pending.first_time,
-            "content": merged_text,
-        }
-        transcript = await self._build_context_for_api(
-            channel_id=channel_id,
-            pending_messages=[pending_entry],
-        )
-        if not transcript:
-            self.logger.error("LOGIC", "empty transcript, skip api request")
-            return
         self._save_entry(channel_id, "user", pending.user_label, merged_text, at=pending.first_time)
-        messages = [{"role": "user", "content": transcript}]
+        messages, summary = await self._build_messages_for_api(
+            channel_id=channel_id,
+            pending_messages=[],
+        )
+        if not messages:
+            self.logger.error("LOGIC", "empty messages, skip api request")
+            return
         merged_one_line = merged_text.replace("\n", "\\n")
         now_send = time.monotonic()
         wait_from_last_msg = now_send - pending.last_message_at
@@ -307,32 +331,25 @@ class DispatchMixin:
             f"🚀 api_sent user={pending.user_label} chunks={len(pending.chunks)} merged_len={len(merged_text)}"
         )
 
-        await self._send_and_finalize(channel_id, pending.channel, messages, pending.anchor_message)
+        await self._send_and_finalize(channel_id, pending.channel, messages, pending.anchor_message, summary=summary)
 
     async def _reply_immediate(self, message: discord.Message, text: str) -> None:
         channel_id = message.channel.id
         user_label = self._user_label(message.author)
         now_clock = self._now_clock()
 
-        pending_entry = {
-            "role": "user",
-            "username": user_label,
-            "time": now_clock,
-            "content": text,
-        }
-        transcript = await self._build_context_for_api(
-            channel_id=channel_id,
-            pending_messages=[pending_entry],
-        )
-        if not transcript:
-            self.logger.error("LOGIC", "empty transcript, skip api request")
-            return
         self._save_entry(channel_id, "user", user_label, text, at=now_clock)
-        messages = [{"role": "user", "content": transcript}]
+        messages, summary = await self._build_messages_for_api(
+            channel_id=channel_id,
+            pending_messages=[],
+        )
+        if not messages:
+            self.logger.error("LOGIC", "empty messages, skip api request")
+            return
         text_one_line = text.replace("\n", "\\n")
         self.logger.info(f"✅ api_request_sent (immediate) includes={text_one_line}")
 
-        await self._send_and_finalize(channel_id, message.channel, messages, message)
+        await self._send_and_finalize(channel_id, message.channel, messages, message, summary=summary)
 
     # -- tool calls -----------------------------------------------------------
 
@@ -362,6 +379,7 @@ class DispatchMixin:
         channel: discord.abc.Messageable,
         *,
         prior_messages: list[dict[str, str]] | None = None,
+        prior_summary: str = "",
         search_depth: int = 0,
         edit_msg: discord.Message | None = None,
         had_reply: bool = True,
@@ -401,7 +419,7 @@ class DispatchMixin:
             if tc.name == "generate_image":
                 prompt = str(tc.input.get("prompt", "")).strip()
                 if prompt:
-                    await self._send_pixai_image(prompt, channel_id, channel, source_message)
+                    await self._send_generated_image(prompt, channel_id, channel, source_message)
             if tc.name == "switch_mode":
                 new_mode = tc.input.get("mode", "")
                 if new_mode in ("chat", "novel") and new_mode != self._auto_effective_mode:
@@ -417,7 +435,15 @@ class DispatchMixin:
                     else:
                         if search_depth == 0:
                             await self._add_reaction(source_message, "🔍")
-                        await self._execute_search(query, channel_id, channel, prior_messages, search_depth=search_depth, edit_msg=edit_msg)
+                        await self._execute_search(
+                            query,
+                            channel_id,
+                            channel,
+                            prior_messages,
+                            summary=prior_summary,
+                            search_depth=search_depth,
+                            edit_msg=edit_msg,
+                        )
                         if search_depth == 0:
                             await self._remove_reaction(source_message, "🔍")
 
@@ -511,48 +537,57 @@ class DispatchMixin:
             self.logger.error("UNKNOWN", "failed to send voice message", exc=exc)
         await self._remove_reaction(source_message, "🎤")
 
-    # -- pixai image ----------------------------------------------------------
+    # -- image generation -----------------------------------------------------
 
-    async def _send_pixai_image(
+    async def _send_generated_image(
         self,
         prompt: str,
         channel_id: int,
         channel: discord.abc.Messageable,
         source_message: discord.Message | None = None,
     ) -> None:
-        if not self.pixai_client.available:
-            self.logger.info("🎨 pixai skipped: no tokens configured")
+        if not self.hf_image_client.available and not self.pixai_client.available:
+            self.logger.info("🎨 image generation skipped: no provider configured")
             return
 
         await self._add_reaction(source_message, "🎨")
-        try:
-            url = await asyncio.to_thread(self.pixai_client.generate_image, prompt)
-        except Exception as exc:  # noqa: BLE001
-            self.logger.error("UNKNOWN", "pixai generate failed", exc=exc)
+        image_bytes: bytes | None = None
+        send_error: Exception | None = None
+
+        if self.hf_image_client.available:
+            try:
+                image_bytes = await asyncio.to_thread(self.hf_image_client.generate_image, prompt)
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("UNKNOWN", "huggingface image generate failed", exc=exc)
+                send_error = exc
+
+        if image_bytes is None and self.pixai_client.available:
+            try:
+                url = await asyncio.to_thread(self.pixai_client.generate_image, prompt)
+                import requests as _req
+                resp = await asyncio.to_thread(lambda: _req.get(url, timeout=60))
+                resp.raise_for_status()
+                if len(resp.content) < 1000:
+                    raise RuntimeError(f"image too small ({len(resp.content)} bytes), likely not a real image")
+                image_bytes = resp.content
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("UNKNOWN", "pixai generate failed", exc=exc)
+                send_error = exc
+
+        if image_bytes is None:
             await self._remove_reaction(source_message, "🎨")
             await self._send_error_feedback(
-                channel_id, channel, "⛔ 图片生成失败", str(exc), "[系统: 图片生成失败]",
+                channel_id, channel, "⛔ 图片生成失败", str(send_error or "no image provider available"), "[系统: 图片生成失败]",
             )
             return
 
         try:
             import io
-            import requests as _req
-            resp = await asyncio.to_thread(
-                lambda: _req.get(url, timeout=60)
-            )
-            resp.raise_for_status()
-            if len(resp.content) < 1000:
-                raise RuntimeError(f"image too small ({len(resp.content)} bytes), likely not a real image")
-            file = discord.File(io.BytesIO(resp.content), filename="pixai.png")
+            file = discord.File(io.BytesIO(image_bytes), filename="image.png")
             await channel.send(file=file)
             self._save_bot_reply(channel_id, f"[图片: {prompt}]")
         except Exception as exc:  # noqa: BLE001
-            self.logger.error("UNKNOWN", "failed to send pixai image", exc=exc)
-            try:
-                await channel.send(f"图片生成好了但发送失败：{url}")
-            except Exception:
-                pass
+            self.logger.error("UNKNOWN", "failed to send generated image", exc=exc)
 
         await self._remove_reaction(source_message, "🎨")
 
@@ -565,6 +600,7 @@ class DispatchMixin:
         channel: discord.abc.Messageable,
         prior_messages: list[dict[str, str]] | None = None,
         *,
+        summary: str = "",
         search_depth: int = 0,
         edit_msg: discord.Message | None = None,
     ) -> None:
@@ -574,7 +610,7 @@ class DispatchMixin:
         self.logger.info(f"🔍 web_search query={query} depth={search_depth}")
         recent_entries = self.history_store.load_all_entries(channel_id=channel_id)
         context_hint = self.history_store.render_entries(recent_entries[-10:]) if recent_entries else ""
-        soul = load_system_prompt(effective_mode=self.effective_split_mode, auto_mode=self.settings.split_mode == "auto")
+        soul = load_system_prompt(effective_mode=self.effective_split_mode)
         try:
             results = await asyncio.to_thread(
                 web_search,
@@ -601,10 +637,14 @@ class DispatchMixin:
             search_block = f"[搜索结果: {query}]\n未找到相关结果。"
 
         if search_depth == 0:
-            recent = recent_entries[-self.settings.context_entries:]
-            recent_block = self.history_store.render_entries(recent) if recent else ""
-            context_parts = [p for p in [recent_block, search_block] if p]
-            messages = [{"role": "user", "content": "\n\n".join(context_parts)}]
+            if prior_messages is not None:
+                messages = list(prior_messages)
+            else:
+                messages, summary = await self._build_messages_for_api(
+                    channel_id=channel_id,
+                    pending_messages=[],
+                )
+            messages.append({"role": "user", "content": search_block})
         else:
             messages = list(prior_messages) if prior_messages else []
             messages.append({"role": "user", "content": search_block})
@@ -613,7 +653,10 @@ class DispatchMixin:
         try:
             async with channel.typing():
                 search_response = await asyncio.to_thread(
-                    self.reply_service.generate_reply_with_tools, messages, include_tools=True,
+                    self.reply_service.generate_reply_with_tools,
+                    messages,
+                    include_tools=True,
+                    summary=summary,
                 )
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "search follow-up api request failed", exc=exc)
@@ -641,8 +684,13 @@ class DispatchMixin:
                     pass
             self._process_timer_calls(search_response.tool_calls, channel_id, channel)
             await self._execute_search(
-                next_search.input["query"], channel_id, channel, messages,
-                search_depth=next_depth, edit_msg=edit_msg,
+                next_search.input["query"],
+                channel_id,
+                channel,
+                messages,
+                summary=summary,
+                search_depth=next_depth,
+                edit_msg=edit_msg,
             )
             return
 
@@ -662,7 +710,15 @@ class DispatchMixin:
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send search reply", exc=exc)
 
-        await self._handle_tool_calls(search_response, channel_id, channel, prior_messages=messages, search_depth=next_depth, edit_msg=edit_msg)
+        await self._handle_tool_calls(
+            search_response,
+            channel_id,
+            channel,
+            prior_messages=messages,
+            prior_summary=summary,
+            search_depth=next_depth,
+            edit_msg=edit_msg,
+        )
 
     # -- message editing & regeneration ---------------------------------------
 
@@ -709,24 +765,35 @@ class DispatchMixin:
         channel_id: int,
         channel: discord.abc.Messageable,
     ) -> None:
-        transcript = await self._build_context_for_api(
+        messages, summary = await self._build_messages_for_api(
             channel_id=channel_id,
             pending_messages=[],
         )
-        if not transcript:
+        if not messages:
             return
-        messages = [{"role": "user", "content": transcript}]
         try:
             async with channel.typing():
                 response, sent_msgs = await self._stream_and_send(
-                    None, channel, messages,
+                    None, channel, messages, summary=summary,
                 )
             reply = (response.text or "").strip()
+            suppress_visible_reply = self._should_suppress_visible_reply(response.tool_calls)
+            if suppress_visible_reply and sent_msgs:
+                await self._delete_messages(sent_msgs)
+                sent_msgs = []
+                reply = ""
             has_search = any(tc.name == "web_search" for tc in response.tool_calls)
             if reply and not has_search:
                 self._save_bot_reply(channel_id, reply)
             edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
-            await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages, edit_msg=edit_msg)
+            await self._handle_tool_calls(
+                response,
+                channel_id,
+                channel,
+                prior_messages=messages,
+                prior_summary=summary,
+                edit_msg=edit_msg,
+            )
             self._schedule_proactive(channel_id, channel)
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "regenerate reply failed", exc=exc)

@@ -19,6 +19,7 @@ from app.services.reply_service import ReplyService
 from app.adapters.discord_ui import ToolboxView
 from app.adapters.discord_dispatch import DispatchMixin
 from app.adapters.discord_proactive import ProactiveMixin
+from app.infra.hf_image_client import HFImageClient
 from app.infra.pixai_client import PixAIClient
 
 
@@ -43,6 +44,10 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
             compression_store=self.compression_store,
         )
         self.pixai_client = PixAIClient(settings.pixai_tokens)
+        self.hf_image_client = HFImageClient(
+            settings.hf_image_api_key,
+            settings.hf_image_model,
+        )
         self.prompt_service = PromptService()
         self.context_builder = ContextBuilder(self.history_store, self.compression_store)
         self.proactive_idle_seconds = settings.proactive_idle_seconds
@@ -173,8 +178,12 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
             self._auto_effective_mode = "chat"
         self.reply_service.effective_mode = self.effective_split_mode
         self.pixai_client.set_tokens(settings.pixai_tokens)
+        self.hf_image_client.apply_settings(
+            settings.hf_image_api_key,
+            settings.hf_image_model,
+        )
         self.compression_service.apply_settings(settings)
-        self.logger.bot_key = settings.bot_key
+        self.logger.bot_key = self._effective_bot_key()
         self.logger.mode = settings.app_mode
         self.logger.show_error_detail = settings.show_error_detail
         self.session_timeout_seconds = settings.session_timeout_seconds
@@ -240,6 +249,41 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
             pending_messages=pending_messages,
         )
 
+    async def _build_messages_for_api(
+        self,
+        *,
+        channel_id: int,
+        pending_messages: list[dict[str, str]],
+    ) -> tuple[list[dict[str, str]], str]:
+        """Return (messages, summary) in alternating format.
+
+        Handles auto-compression when token limit is exceeded.
+        """
+        live_block = self.context_builder.build_live_block(channel_id=channel_id)
+        estimated_tokens = self.context_builder.estimate_tokens(live_block)
+        if self.settings.app_mode == "debug":
+            self.logger.info(
+                f"🧮 transcript_tokens ch={channel_id} est_tokens={estimated_tokens} "
+                f"limit={self.settings.transcript_max_tokens}"
+            )
+        if estimated_tokens > self.settings.transcript_max_tokens:
+            self.logger.info(
+                f"🗜️ transcript_over_limit ch={channel_id} est_tokens={estimated_tokens} "
+                f"limit={self.settings.transcript_max_tokens} -> compress"
+            )
+            try:
+                await asyncio.to_thread(
+                    self.compression_service.compress_history,
+                    channel_id=channel_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("UNKNOWN", "auto compression failed", exc=exc)
+
+        return self.context_builder.build_messages_for_api(
+            channel_id=channel_id,
+            pending_messages=pending_messages,
+        )
+
     # -- utilities ------------------------------------------------------------
 
     def _typing_key(self, channel_id: int, user_id: int) -> tuple[int, int]:
@@ -274,7 +318,58 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
         )
 
     def _save_bot_reply(self, channel_id: int, content: str) -> None:
-        self._save_entry(channel_id, "assistant", self.settings.bot_key, content)
+        self._save_entry(channel_id, "assistant", self._effective_bot_key(), content)
+
+    def _effective_bot_key(self) -> str:
+        configured = (self.settings.bot_key or "").strip()
+        if configured:
+            return configured
+        user = self.client.user
+        if user is not None:
+            display_name = getattr(user, "display_name", None)
+            if isinstance(display_name, str) and display_name.strip():
+                return display_name.strip()
+            name = getattr(user, "name", None)
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+        return "Bot"
+
+    @staticmethod
+    def _extract_saved_image_descs(content: str) -> list[str]:
+        return [
+            line.strip()
+            for line in (content or "").splitlines()
+            if line.strip().startswith("[图片:")
+        ]
+
+    async def _build_message_text(
+        self,
+        message: discord.Message,
+        *,
+        image_descs: list[str] | None = None,
+    ) -> str:
+        text = (message.content or "").strip()
+        if not text and message.stickers:
+            names = "、".join(s.name for s in message.stickers)
+            text = f"[贴纸: {names}]"
+
+        if image_descs:
+            text = (text + "\n" if text else "") + "\n".join(image_descs)
+
+        if not text:
+            return ""
+
+        ref = message.reference
+        if ref and ref.message_id:
+            try:
+                quoted = ref.resolved or await message.channel.fetch_message(ref.message_id)
+                if quoted and getattr(quoted, "content", None):
+                    quote_author = self._user_label(quoted.author)
+                    text = f"[引用 {quote_author} 的消息: {quoted.content}]\n{text}"
+            except Exception:  # noqa: BLE001
+                pass
+
+        return text
 
     def _typing_probe_enabled(self) -> bool:
         return self.settings.app_mode == "debug" and self.settings.show_interaction_logs
@@ -313,6 +408,7 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
     # -- discord events -------------------------------------------------------
 
     async def on_ready(self) -> None:
+        self.logger.bot_key = self._effective_bot_key()
         self.logger.startup_jar(cat_count=1)
         self.logger.info(f"bot is running as {self.client.user}")
         if not self._commands_synced:
@@ -376,22 +472,25 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
             return
         if before.content == after.content:
             return
-        new_text = (after.content or "").strip()
-        if not new_text:
-            return
         channel_id = after.channel.id
         entries = self.history_store.load_all_entries(channel_id=channel_id)
         if not entries:
             return
         if entries[-1].get("role") != "assistant":
             return
-        old_text = (before.content or "").strip()
-        for e in reversed(entries):
-            if e["role"] == "user":
-                if old_text and e["content"] != old_text:
-                    return
-                break
-        else:
+        last_user_entry = next((e for e in reversed(entries) if e["role"] == "user"), None)
+        if last_user_entry is None:
+            return
+
+        async for msg in after.channel.history(after=after, limit=50):
+            if not msg.author.bot:
+                return
+
+        new_text = await self._build_message_text(
+            after,
+            image_descs=self._extract_saved_image_descs(last_user_entry["content"]),
+        )
+        if not new_text:
             return
 
         to_delete: list[discord.Message] = []
@@ -458,27 +557,10 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
             if allowed_ids and str(message.author.id) not in allowed_ids:
                 return
 
-        text = (message.content or "").strip()
-        if not text and message.stickers:
-            names = "、".join(s.name for s in message.stickers)
-            text = f"[贴纸: {names}]"
-
         image_descs = await self._describe_attachments(message)
-        if image_descs:
-            text = (text + "\n" if text else "") + "\n".join(image_descs)
-
+        text = await self._build_message_text(message, image_descs=image_descs)
         if not text:
             return
-
-        ref = message.reference
-        if ref and ref.message_id:
-            try:
-                quoted = ref.resolved or await message.channel.fetch_message(ref.message_id)
-                if quoted and getattr(quoted, "content", None):
-                    quote_author = self._user_label(quoted.author)
-                    text = f"[引用 {quote_author} 的消息: {quoted.content}]\n{text}"
-            except Exception:  # noqa: BLE001
-                pass
         key = self._typing_key(message.channel.id, message.author.id)
         self._last_message_ts[key] = time.time()
         self._save_last_message_ts()

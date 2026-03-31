@@ -27,7 +27,7 @@ class Settings:
     typing_detect_delay_seconds: float = 1.0
     reset_timer_seconds: float = 3.0
     proactive_idle_seconds: float = 180.0
-    typing_wait: bool = False
+    typing_wait: bool = True
     split_mode: str = "auto"
     chat_reply_delay_seconds: float = 0.8
     typing_nudge_seconds: float = 60.0
@@ -45,6 +45,8 @@ class Settings:
     vision_base_url: str = "https://gcli.ggchan.dev/v1"
     vision_api_key: str = ""
     vision_model: str = "gemini-2.5-pro"
+    hf_image_api_key: str = ""
+    hf_image_model: str = ""
     compression_base_url: str = ""
     compression_api_key: str = ""
     compression_model: str = "claude-haiku-4-5"
@@ -127,7 +129,7 @@ def load_settings() -> Settings:
 
     if "TZ" in merged:
         os.environ["TZ"] = merged["TZ"]
-    bot_key = _env_value("BOT_KEY", merged, "Haze").strip() or "Haze"
+    bot_key = _env_value("BOT_KEY", merged, "").strip()
     mode = _env_value("APP_MODE", merged, "normal").strip().lower() or "normal"
 
     base_url = _env_value("BASE_URL", merged, "https://vesper.omenaros.site/v1").strip()
@@ -139,7 +141,7 @@ def load_settings() -> Settings:
     )
     reset_timer_seconds = float(_env_value("RESET_TIMER_SECONDS", merged, "3.0").strip() or "3.0")
     proactive_idle_seconds = float(_env_value("PROACTIVE_IDLE_SECONDS", merged, "180.0").strip() or "180.0")
-    typing_wait = _env_bool("TYPING_WAIT", merged, False)
+    typing_wait = _env_bool("TYPING_WAIT", merged, True)
     chat_reply_delay_seconds = float(
         _env_value("CHAT_REPLY_DELAY_SECONDS", merged, "0.8").strip() or "0.8"
     )
@@ -167,6 +169,8 @@ def load_settings() -> Settings:
     vision_base_url = _env_value("VISION_BASE_URL", merged, "https://gcli.ggchan.dev/v1").strip()
     vision_api_key = _env_value("VISION_API_KEY", merged, "").strip()
     vision_model = _env_value("VISION_MODEL", merged, "gemini-2.5-pro").strip()
+    hf_image_api_key = _env_value("HF_IMAGE_API_KEY", merged, "").strip()
+    hf_image_model = _env_value("HF_IMAGE_MODEL", merged, "").strip()
 
     compression_base_url = _env_value("COMPRESSION_BASE_URL", merged, "").strip()
     compression_api_key = _env_value("COMPRESSION_API_KEY", merged, "").strip()
@@ -213,6 +217,8 @@ def load_settings() -> Settings:
         vision_base_url=vision_base_url,
         vision_api_key=vision_api_key,
         vision_model=vision_model,
+        hf_image_api_key=hf_image_api_key,
+        hf_image_model=hf_image_model,
         compression_base_url=compression_base_url,
         compression_api_key=compression_api_key,
         compression_model=compression_model,
@@ -265,6 +271,8 @@ def summarize_settings(settings: Settings) -> dict[str, Any]:
         "VISION_BASE_URL": settings.vision_base_url,
         "VISION_MODEL": settings.vision_model,
         "VISION_API_KEY_SET": bool(settings.vision_api_key),
+        "HF_IMAGE_MODEL": settings.hf_image_model,
+        "HF_IMAGE_API_KEY_SET": bool(settings.hf_image_api_key),
         "COMPRESSION_BASE_URL": settings.compression_base_url,
         "COMPRESSION_MODEL": settings.compression_model,
         "COMPRESSION_API_KEY_SET": bool(settings.compression_api_key),
