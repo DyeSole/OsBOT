@@ -35,6 +35,7 @@ class LLMResponse:
 
 class LLMClient:
     ANTHROPIC_VERSION = "2023-06-01"
+    ANTHROPIC_BETA = "prompt-caching-2024-07-31"
     DEFAULT_MAX_TOKENS = 1024
 
     DEBUG_DIR = Path(__file__).resolve().parents[2] / "data" / "debug"
@@ -56,6 +57,9 @@ class LLMClient:
             return self.base_url
         return f"{self.base_url}/chat/completions"
 
+    def _uses_claude(self) -> bool:
+        return self._is_anthropic_messages_api() or "claude" in self.model.lower()
+
     def _headers(self) -> dict[str, str]:
         headers = {
             "content-type": "application/json",
@@ -64,6 +68,8 @@ class LLMClient:
         }
         if self._is_anthropic_messages_api():
             headers["anthropic-version"] = self.ANTHROPIC_VERSION
+        if self._uses_claude():
+            headers["anthropic-beta"] = self.ANTHROPIC_BETA
         return headers
 
     def _dump_payload_debug(

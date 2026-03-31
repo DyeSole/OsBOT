@@ -27,7 +27,7 @@ class Settings:
     typing_detect_delay_seconds: float = 1.0
     reset_timer_seconds: float = 3.0
     proactive_idle_seconds: float = 180.0
-    typing_wait: bool = True
+    typing_wait: bool = False
     split_mode: str = "auto"
     chat_reply_delay_seconds: float = 0.8
     typing_nudge_seconds: float = 60.0
@@ -141,7 +141,7 @@ def load_settings() -> Settings:
     )
     reset_timer_seconds = float(_env_value("RESET_TIMER_SECONDS", merged, "3.0").strip() or "3.0")
     proactive_idle_seconds = float(_env_value("PROACTIVE_IDLE_SECONDS", merged, "180.0").strip() or "180.0")
-    typing_wait = _env_bool("TYPING_WAIT", merged, True)
+    typing_wait = _env_bool("TYPING_WAIT", merged, False)
     chat_reply_delay_seconds = float(
         _env_value("CHAT_REPLY_DELAY_SECONDS", merged, "0.8").strip() or "0.8"
     )

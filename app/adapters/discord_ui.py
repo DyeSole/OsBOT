@@ -367,69 +367,14 @@ class HFImageModal(discord.ui.Modal, title="Hugging Face 画图 API"):
         )
 
 
-class PixAITokenModal(discord.ui.Modal, title="画图 API 配置"):
-    def __init__(self, bot: DiscordBot):
-        super().__init__()
-        self.bot = bot
-        tokens = bot.settings.pixai_tokens
-        padded = (tokens + [""] * 4)[:4]
-        self.token_slots: list[discord.ui.TextInput] = []
-        for i in range(4):
-            inp = discord.ui.TextInput(
-                label=f"Token {i + 1}",
-                default=padded[i],
-                required=False,
-                max_length=800,
-                style=discord.TextStyle.short,
-                placeholder="PixAI JWT Token",
-            )
-            self.token_slots.append(inp)
-            self.add_item(inp)
-        self.pixai_prompt = discord.ui.TextInput(
-            label="画图提示词（自动追加到用户 prompt 后）",
-            style=discord.TextStyle.paragraph,
-            default=bot.prompt_service.read_prompt("pixai").strip(),
-            required=False,
-            max_length=2000,
-            placeholder="masterpiece, best quality, high detail",
-        )
-        self.add_item(self.pixai_prompt)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        tokens = [s.value.strip() for s in self.token_slots if s.value.strip()]
-        save_config({"PIXAI_TOKENS": ",".join(tokens)})
-        self.bot.prompt_service.write_prompt(target="pixai", content=self.pixai_prompt.value)
-        self.bot.apply_settings(load_settings())
-        await interaction.response.edit_message(
-            content=f"API 配置\n\n画图 API 配置已保存，共 {len(tokens)} 个 Token，立即生效。",
-            view=ApiToolboxView(self.bot),
-        )
-
-
 class WatchOnlineTimeModal(discord.ui.Modal, title="上线监听"):
     def __init__(self, bot: DiscordBot):
         super().__init__()
         self.bot = bot
-        self.idle_seconds = discord.ui.TextInput(
-            label="上线后等待时间（秒），0=关闭",
-            default=_settings_value(bot.settings, "WATCH_ONLINE_IDLE_SECONDS"),
-            required=True,
-            max_length=10,
-        )
-        self.add_item(self.idle_seconds)
-        self.prompt = discord.ui.TextInput(
-            label="上线提示词（{minutes}=分钟数）",
-            style=discord.TextStyle.paragraph,
-            default=bot.prompt_service.read_prompt("watch_online").strip()
-                or "[系统提示] 你关注的用户已经上线{minutes}分钟了但没有说话，跟他主动说句话。",
-            required=False,
-            max_length=500,
-        )
-        self.add_item(self.prompt)
         ids = bot.settings.watch_user_ids
-        padded = (ids + [""] * 3)[:3]
+        padded = (ids + [""] * 5)[:5]
         self.user_slots: list[discord.ui.TextInput] = []
-        for i in range(3):
+        for i in range(5):
             inp = discord.ui.TextInput(
                 label=f"监听用户 ID {i + 1}",
                 default=padded[i],
@@ -442,18 +387,11 @@ class WatchOnlineTimeModal(discord.ui.Modal, title="上线监听"):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         ids = [s.value.strip() for s in self.user_slots if s.value.strip()]
-        save_config({
-            "WATCH_ONLINE_IDLE_SECONDS": self.idle_seconds.value.strip(),
-            "WATCH_USER_IDS": ",".join(ids),
-        })
-        self.bot.prompt_service.write_prompt(target="watch_online", content=self.prompt.value)
+        save_config({"WATCH_USER_IDS": ",".join(ids)})
         self.bot.apply_settings(load_settings())
         id_list = "\n".join(f"  {uid}" for uid in ids) if ids else "  （无）"
         await interaction.response.edit_message(
-            content=(
-                f"主动消息\n\n上线等待时间：{self.idle_seconds.value.strip()} 秒\n"
-                f"监听用户：\n{id_list}"
-            ),
+            content=f"主动消息\n\n监听用户：\n{id_list}",
             view=ProactiveToolboxView(self.bot),
         )
 
@@ -521,15 +459,11 @@ class ApiToolboxView(BotView):
     async def compression_api(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(CompressionModal(self.bot))
 
-    @discord.ui.button(label="HF 画图 API", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="HF   API", style=discord.ButtonStyle.primary, row=1)
     async def hf_image_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(HFImageModal(self.bot))
 
-    @discord.ui.button(label="PixAI 画图 API", style=discord.ButtonStyle.primary, row=2)
-    async def pixai_config(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(PixAITokenModal(self.bot))
-
-    @discord.ui.button(label=BACK_BUTTON_LABEL, style=discord.ButtonStyle.secondary, row=3)
+    @discord.ui.button(label=BACK_BUTTON_LABEL, style=discord.ButtonStyle.secondary, row=2)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(content="工具箱", view=ToolboxView(self.bot))
 
@@ -551,7 +485,7 @@ class PromptToolboxView(BotView):
 class ProactiveToolboxView(BotView):
     def __init__(self, bot: DiscordBot):
         super().__init__(bot)
-        if bot.settings.typing_wait:
+        if not bot.settings.typing_wait:
             self.typing_wait.label = "即时回复 开"
             self.typing_wait.style = discord.ButtonStyle.success
         else:
@@ -560,25 +494,14 @@ class ProactiveToolboxView(BotView):
 
     @discord.ui.button(label="即时回复", style=discord.ButtonStyle.primary, row=0)
     async def typing_wait(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        enabled = not self.bot.settings.typing_wait
-        save_config({"TYPING_WAIT": "1" if enabled else "0"})
+        immediate_enabled = self.bot.settings.typing_wait
+        save_config({"TYPING_WAIT": "0" if immediate_enabled else "1"})
         self.bot.apply_settings(load_settings())
-        state = "开启" if enabled else "关闭"
+        state = "开启" if immediate_enabled else "关闭"
         await interaction.response.edit_message(
             content=f"主动消息\n\n即时回复已{state}。",
             view=ProactiveToolboxView(self.bot),
         )
-
-    @discord.ui.button(label="聊天主动", style=discord.ButtonStyle.primary, row=0)
-    async def chat_proactive(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(ProactiveModal(self.bot))
-
-    @discord.ui.button(label="表情打字", style=discord.ButtonStyle.primary, row=0)
-    async def typing_nudge(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(ConfigModal(
-            self.bot, fields=TYPING_NUDGE_FIELDS, title="表情打字 设置",
-            confirm="主动消息\n\n表情打字等待时间已保存，立即生效。", return_view=ProactiveToolboxView,
-        ))
 
     @discord.ui.button(label="上线监听", style=discord.ButtonStyle.primary, row=1)
     async def watch_online_time(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
