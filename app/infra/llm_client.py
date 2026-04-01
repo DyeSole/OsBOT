@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import requests
+import tiktoken
 
 
 log = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ class LLMResponse:
     text: str
     tool_calls: list[ToolCall] = field(default_factory=list)
     usage: UsageInfo | None = None
+    raw_text: str = ""  # original text before tool tag stripping, for history storage
 
 
 class LLMClient:
@@ -298,6 +300,84 @@ class LLMClient:
             json.dumps(dump, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
         )
 
+    def count_input_tokens(
+        self,
+        messages: list[dict[str, Any]],
+        system_prompt: str,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> int:
+        exact = self._count_input_tokens_remote(messages, system_prompt, tools)
+        if exact is not None:
+            return exact
+        return self._count_input_tokens_local(messages, system_prompt, tools)
+
+    def _count_input_tokens_remote(
+        self,
+        messages: list[dict[str, Any]],
+        system_prompt: str,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> int | None:
+        if not self._is_anthropic_messages_api() or not self.api_key:
+            return None
+
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+        }
+        if system_prompt:
+            payload["system"] = system_prompt
+        if tools:
+            payload["tools"] = tools
+
+        try:
+            resp = requests.post(
+                f"{self.base_url}/count_tokens",
+                headers=self._headers(),
+                json=payload,
+                timeout=30,
+            )
+            if resp.status_code >= 400:
+                return None
+            data = resp.json()
+        except Exception:
+            return None
+
+        raw_tokens = data.get("input_tokens")
+        if isinstance(raw_tokens, int):
+            return raw_tokens
+        return None
+
+    def _count_input_tokens_local(
+        self,
+        messages: list[dict[str, Any]],
+        system_prompt: str,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> int:
+        encoder = self._local_token_encoder()
+        texts: list[str] = []
+        if system_prompt:
+            texts.append(system_prompt)
+        for item in messages:
+            content = item.get("content", "")
+            if isinstance(content, str):
+                texts.append(content)
+            else:
+                texts.append(json.dumps(content, ensure_ascii=False, sort_keys=True))
+        if tools:
+            texts.append(json.dumps(tools, ensure_ascii=False, sort_keys=True))
+
+        token_count = sum(len(encoder.encode(text)) for text in texts if text)
+        token_count += max(0, len(messages) * 4)
+        if system_prompt:
+            token_count += 2
+        return token_count
+
+    def _local_token_encoder(self):  # type: ignore[no-untyped-def]
+        try:
+            return tiktoken.encoding_for_model(self.model)
+        except Exception:
+            return tiktoken.get_encoding("cl100k_base")
+
     def generate(self, messages: list[dict[str, str]], system_prompt: str) -> str:
         data, payload = self._do_request(messages, system_prompt)
         response = self._parse_response(data)
@@ -502,18 +582,49 @@ class VisionClient:
             headers["anthropic-version"] = self.ANTHROPIC_VERSION
         return headers
 
-    def describe_image(self, image_bytes: bytes, media_type: str, *, system_prompt: str = "", context: str = "") -> str | None:
+    @staticmethod
+    def _detect_media_type(data: bytes) -> str:
+        if data[:4] == b"\x89PNG":
+            return "image/png"
+        if data[:3] == b"\xff\xd8\xff":
+            return "image/jpeg"
+        if data[:6] in (b"GIF87a", b"GIF89a"):
+            return "image/gif"
+        if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return "image/webp"
+        return ""
+
+    def describe_image(
+        self,
+        image_bytes: bytes,
+        media_type: str,
+        *,
+        system_prompt: str = "",
+        context: str = "",
+        image_url: str = "",
+        fallback_context: str = "",
+    ) -> str | None:
         if not self.available:
             return None
 
-        b64 = base64.b64encode(image_bytes).decode("ascii")
-        user_text = f"{context}\n\n{self.DESCRIBE_PROMPT}".strip() if context else self.DESCRIBE_PROMPT
+        detected = self._detect_media_type(image_bytes)
+        if detected:
+            media_type = detected
+
+        user_parts: list[str] = []
+        if system_prompt:
+            user_parts.append(system_prompt)
+        if context:
+            user_parts.append(context)
+        user_parts.append(self.DESCRIBE_PROMPT)
+        user_text = "\n\n".join(part for part in user_parts if part).strip()
 
         try:
             if self._is_anthropic():
+                b64 = base64.b64encode(image_bytes).decode("ascii")
                 payload: dict[str, Any] = {
                     "model": self.model,
-                    "max_tokens": 300,
+                    "max_tokens": 8000,
                     "messages": [
                         {
                             "role": "user",
@@ -531,28 +642,21 @@ class VisionClient:
                         }
                     ],
                 }
-                if system_prompt:
-                    payload["system"] = system_prompt
             else:
-                data_url = f"data:{media_type};base64,{b64}"
-                messages: list[dict[str, Any]] = []
-                if system_prompt:
-                    messages.append({"role": "system", "content": system_prompt})
-                messages.append(
+                url = image_url or f"data:{media_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+                messages: list[dict[str, Any]] = [
                     {
                         "role": "user",
                         "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": data_url},
-                            },
+                            {"type": "image_url", "image_url": {"url": url}},
                             {"type": "text", "text": user_text},
                         ],
                     }
-                )
+                ]
                 payload = {
                     "model": self.model,
-                    "max_tokens": 300,
+                    "max_tokens": 8000,
+                    "stream": False,
                     "messages": messages,
                 }
 
@@ -562,14 +666,20 @@ class VisionClient:
                 json=payload,
                 timeout=120,
             )
-            if resp.status_code >= 400:
-                log.warning("vision api http %d: %s", resp.status_code, resp.text[:200])
+            if resp.status_code >= 400 or not resp.content:
+                log.warning("vision api http %d body=%r", resp.status_code, resp.text[:200])
                 if self.fallback:
                     log.info("vision falling back to main model")
-                    return self.fallback.describe_image(image_bytes, media_type, system_prompt=system_prompt, context=context)
+                    return self.fallback.describe_image(image_bytes, media_type, system_prompt=system_prompt, context=fallback_context or context, image_url=image_url)
                 return None
 
-            data = resp.json()
+            try:
+                data = resp.json()
+            except Exception:
+                log.warning("vision api unparseable body (status %d): %r", resp.status_code, resp.text[:200])
+                if self.fallback:
+                    return self.fallback.describe_image(image_bytes, media_type, system_prompt=system_prompt, context=fallback_context or context, image_url=image_url)
+                return None
 
             if self._is_anthropic():
                 content = data.get("content", [])
@@ -584,12 +694,12 @@ class VisionClient:
 
             if result is None and self.fallback:
                 log.info("vision empty result, falling back to main model")
-                return self.fallback.describe_image(image_bytes, media_type, system_prompt=system_prompt, context=context)
+                return self.fallback.describe_image(image_bytes, media_type, system_prompt=system_prompt, context=fallback_context or context, image_url=image_url)
             return result
 
         except Exception:
             log.exception("vision describe_image failed")
             if self.fallback:
                 log.info("vision exception, falling back to main model")
-                return self.fallback.describe_image(image_bytes, media_type, system_prompt=system_prompt, context=context)
+                return self.fallback.describe_image(image_bytes, media_type, system_prompt=system_prompt, context=fallback_context or context, image_url=image_url)
             return None

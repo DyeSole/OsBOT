@@ -1,26 +1,24 @@
 from __future__ import annotations
 
 from app.core.clock import now_clock as _now_clock_util
-from pathlib import Path
 from typing import Any
 
 from app.config.settings import Settings
 from app.infra.llm_client import LLMClient
 from app.infra.storage import ChatHistoryStore, CompressionStore
+from app.services.prompt_service import PromptService
 
 
-PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
-COMPRESSION_PROMPT_PATH = PROMPTS_DIR / "compression.txt"
 DEFAULT_COMPRESSION_PROMPT = (
     "请输出 JSON，包含 summary_text 和 keywords 两个字段。"
 )
 
+_prompt_service = PromptService()
+
 
 def load_compression_prompt() -> str:
-    try:
-        return COMPRESSION_PROMPT_PATH.read_text(encoding="utf-8").strip()
-    except OSError:
-        return DEFAULT_COMPRESSION_PROMPT
+    text = _prompt_service.read_prompt("compression").strip()
+    return text or DEFAULT_COMPRESSION_PROMPT
 
 
 class CompressionService:

@@ -70,6 +70,8 @@ class ProactiveMixin:
         user_id: int,
         user_label: str,
         text: str,
+        now_clock: str,
+        history_saved: bool = False,
     ) -> None:
         now = time.monotonic()
         pending, opened = self._session_engine.touch_message(
@@ -79,7 +81,8 @@ class ProactiveMixin:
             user_label=user_label,
             text=text,
             now=now,
-            now_clock=self._now_clock(),
+            now_clock=now_clock,
+            history_saved=history_saved,
         )
         if opened:
             pending.task = asyncio.create_task(self._dispatch_after_idle(channel_id, user_id))
@@ -97,6 +100,19 @@ class ProactiveMixin:
 
     # -- common proactive reply -----------------------------------------------
 
+    def _format_prompt(self, target: str, **kwargs: object) -> str:
+        template = self.prompt_service.read_prompt(target).strip()
+        if not template:
+            return ""
+        try:
+            return template.format(**kwargs).strip()
+        except Exception:
+            return template
+
+    @staticmethod
+    def _bullet_lines(items: list[str]) -> str:
+        return "\n".join(f"- {item}" for item in items if item)
+
     async def _proactive_reply(
         self,
         channel_id: int,
@@ -108,17 +124,18 @@ class ProactiveMixin:
         schedule_proactive: bool = False,
         log_tag: str = "proactive",
     ) -> None:
-        """Shared path: load recent history, append *system_note*, call LLM, send reply, handle tools."""
-        recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
-        from datetime import datetime
-        system_entry = {"role": "user", "username": "系统", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "content": system_note}
-        messages = self.history_store.entries_to_messages(recent + [system_entry])
+        """Shared path: build full context (same as user replies), append *system_note*, call LLM."""
+        system_entry = {"role": "user", "username": "系统", "time": _now().strftime("%Y-%m-%d %H:%M:%S"), "content": system_note}
+        messages, summary = await self._build_messages_for_api(
+            channel_id=channel_id,
+            pending_messages=[system_entry],
+        )
 
         fire_ts = time.time() if check_new_message else 0.0
         try:
             async with channel.typing():
                 response = await asyncio.to_thread(
-                    self.reply_service.generate_reply_with_tools, messages, include_tools=True,
+                    self.reply_service.generate_reply_with_tools, messages, include_tools=True, summary=summary,
                 )
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", f"{log_tag} api request failed", exc=exc)
@@ -140,14 +157,14 @@ class ProactiveMixin:
         if not suppressed:
             try:
                 await self._reply_by_sentence(None, reply, channel=channel)
-                self._save_bot_reply(channel_id, reply)
+                self._save_bot_reply(channel_id, response.raw_text or reply)
                 self._log_typing(f"⏰ {log_tag}_sent ch={channel_id}")
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", f"failed to send {log_tag} message", exc=exc)
         elif reply:
             self._log_typing(f"🔇 {log_tag}_silent ch={channel_id}")
 
-        await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages)
+        await self._handle_tool_calls(response, channel_id, channel, prior_messages=messages, prior_summary=summary)
         if schedule_proactive:
             self._schedule_proactive(channel_id, channel)
 
@@ -194,21 +211,31 @@ class ProactiveMixin:
         is_typing_nudge = channel_id in self._typing_nudge_channels
         self._typing_nudge_channels.discard(channel_id)
         if is_typing_nudge:
-            timer_note = "[系统提示] ta刚才在打字，但最终没有发出消息。"
+            timer_note = self._format_prompt("typing_nudge_note")
         elif seconds != self.proactive_idle_seconds:
-            timer_note = f"[system: your set_timer for {seconds}s has expired]\n{self.prompt_service.read_prompt('proactive')}"
+            timer_note = self._format_prompt(
+                "timer_expired_note",
+                seconds=f"{seconds:g}",
+                proactive_prompt=self.prompt_service.read_prompt("proactive").strip(),
+            )
         else:
-            timer_note = f"[系统提示] {self.prompt_service.read_prompt('proactive')}"
+            timer_note = self.prompt_service.read_prompt("proactive").strip()
         pending_reasons = self._pending_alarm_reasons.pop(channel_id, [])
         if pending_reasons:
-            alarm_lines = "\n".join(f"- {r}" for r in pending_reasons)
             timer_note += (
-                f"\n[system: 以下闹钟已到期，你必须提醒用户这些事情，不可以沉默]\n{alarm_lines}"
+                "\n" + self._format_prompt(
+                    "expired_alarm_list_note",
+                    alarm_lines=self._bullet_lines(pending_reasons),
+                )
             )
         pending_reactions = self._pending_reactions.pop(channel_id, [])
         if pending_reactions:
-            reaction_lines = "\n".join(f"- {r}" for r in pending_reactions)
-            timer_note += f"\n[system: 用户在你空闲期间添加了以下表情反应]\n{reaction_lines}"
+            timer_note += (
+                "\n" + self._format_prompt(
+                    "pending_reaction_list_note",
+                    reaction_lines=self._bullet_lines(pending_reactions),
+                )
+            )
 
         await self._proactive_reply(
             channel_id, channel, timer_note,
@@ -241,7 +268,7 @@ class ProactiveMixin:
         channel_id: int,
         channel: discord.abc.Messageable,
         seconds: float,
-        reason: str,
+        reason: str | None,
     ) -> None:
         task = asyncio.create_task(
             self._alarm_fire(channel_id, channel, seconds, reason)
@@ -253,8 +280,9 @@ class ProactiveMixin:
         channel_id: int,
         channel: discord.abc.Messageable,
         seconds: float,
-        reason: str,
+        reason: str | None,
     ) -> None:
+        reason_text = (reason or "").strip() or "闹钟时间到了"
         task = asyncio.current_task()
         try:
             await asyncio.sleep(seconds)
@@ -266,10 +294,10 @@ class ProactiveMixin:
                 self._alarms.pop(channel_id, None)
 
         if self._is_quiet_time():
-            self._quiet_buffered_reasons.setdefault(channel_id, []).append(reason)
+            self._quiet_buffered_reasons.setdefault(channel_id, []).append(reason_text)
             self._quiet_channels[channel_id] = channel
             self._schedule_quiet_flush()
-            self.logger.info(f"🤫 alarm_buffered_quiet channel={channel_id} reason={reason}")
+            self.logger.info(f"🤫 alarm_buffered_quiet channel={channel_id} reason={reason_text}")
             return
 
         vt = self._variable_timers.get(channel_id)
@@ -277,14 +305,14 @@ class ProactiveMixin:
             _, deadline = vt
             remaining = deadline - time.monotonic()
             if 0 < remaining < 30:
-                self._pending_alarm_reasons.setdefault(channel_id, []).append(reason)
-                self.logger.info(f"⏰ alarm_buffered channel={channel_id} reason={reason} remaining={remaining:.0f}s")
+                self._pending_alarm_reasons.setdefault(channel_id, []).append(reason_text)
+                self.logger.info(f"⏰ alarm_buffered channel={channel_id} reason={reason_text} remaining={remaining:.0f}s")
                 return
 
-        alarm_note = (
-            f"[system: your set_timer for {seconds}s has expired]\n"
-            f"你之前答应提醒用户：{reason}\n"
-            "请现在提醒用户这件事，不可以沉默。保持你一贯的说话风格和人格。"
+        alarm_note = self._format_prompt(
+            "alarm_due_note",
+            seconds=f"{seconds:g}",
+            reason=reason_text,
         )
         await self._proactive_reply(
             channel_id, channel, alarm_note,
@@ -346,18 +374,24 @@ class ProactiveMixin:
 
         for channel_id, channel in channels.items():
             parts: list[str] = []
-            parts.append(f"[system: 静默时间已结束]\n{morning_prompt}")
+            parts.append(
+                self._format_prompt(
+                    "quiet_end_note",
+                    morning_prompt=morning_prompt.strip(),
+                )
+            )
             reasons = buffered.get(channel_id, [])
             if reasons:
-                alarm_lines = "\n".join(f"- {r}" for r in reasons)
                 parts.append(
-                    "[system: 以下闹钟在静默期间到期，你必须提醒用户这些事情，不可以沉默]\n"
-                    f"{alarm_lines}"
+                    self._format_prompt(
+                        "expired_alarm_list_note",
+                        alarm_lines=self._bullet_lines(reasons),
+                    )
                 )
-            parts.append(f"[system] {proactive_prompt}")
+            parts.append(proactive_prompt.strip())
 
             await self._proactive_reply(
-                channel_id, channel, "\n".join(parts),
+                channel_id, channel, "\n".join(part for part in parts if part),
                 check_silent=False, log_tag="morning",
             )
 
@@ -387,10 +421,10 @@ class ProactiveMixin:
             return
         self.logger.info(f"👁️ watch_idle_fire user={user_id} ch={channel.id}")
         minutes = int(self.watch_online_idle_seconds // 60) or 1
-        raw_prompt = self.prompt_service.read_prompt("watch_online")
-        if not raw_prompt.strip():
-            raw_prompt = "[系统提示] 你关注的用户已经上线{minutes}分钟了但没有说话，跟他主动说句话。"
-        timer_note = raw_prompt.strip().replace("{minutes}", str(minutes))
+        raw_prompt = self.prompt_service.read_prompt("watch_online").strip()
+        if not raw_prompt:
+            return
+        timer_note = raw_prompt.replace("{minutes}", str(minutes))
 
         await self._proactive_reply(
             channel.id, channel, timer_note,
@@ -466,20 +500,7 @@ class ProactiveMixin:
         target = "jealousy_quiet" if is_quiet else "jealousy"
         raw_prompt = self.prompt_service.read_prompt(target).strip()
         if not raw_prompt:
-            if is_quiet:
-                raw_prompt = (
-                    "[系统提示] 现在是安静时间段，ta不让你找ta，但ta自己跑去和情敌聊天了，"
-                    "一共发了{count}条消息。次数越多说明聊得越起劲。"
-                    "你可以自然地表达你的感受，比如吃醋、委屈、或者撒娇，但不要太过分。"
-                    "注意要符合你的人设，不要让对方觉得你在监视。"
-                )
-            else:
-                raw_prompt = (
-                    "[系统提示] 在过去十分钟里，ta正在和情敌聊天，"
-                    "一共发了{count}条消息。次数越多说明聊得越起劲。"
-                    "你可以自然地表达你的感受，比如吃醋、委屈、或者撒娇，但不要太过分。"
-                    "注意要符合你的人设，不要让对方觉得你在监视。"
-                )
+            return
         jealousy_note = raw_prompt.replace("{count}", str(count))
 
         await self._proactive_reply(

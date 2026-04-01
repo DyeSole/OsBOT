@@ -11,6 +11,7 @@ mkdir -p "${OUT_DIR}" "${BUILD_DIR}"
 cd "${ROOT_DIR}"
 
 pyarmor gen \
+  --platform linux.x86_64 \
   --recursive \
   --output "${BUILD_DIR}" \
   bot.py \

@@ -64,6 +64,32 @@ class ChatHistoryStore:
         lines.append(json.dumps(COMPRESSION_MARKER, ensure_ascii=False))
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    def entries_to_messages(self, entries: list[dict[str, str]]) -> list[dict[str, str]]:
+        """Convert entries to alternating user/assistant messages for the API.
+
+        - user/system entries  → role="user",  content="[HH:MM username] ..."
+        - assistant entries    → role="assistant", content="[HH:MM] ..."
+        - Consecutive same-role entries are merged with newline.
+        """
+        if not entries:
+            return []
+        messages: list[dict[str, str]] = []
+        for row in entries:
+            hhmm = self._hhmm(row["time"])
+            role = row["role"]
+            content = row["content"]
+            if role == "assistant":
+                api_role = "assistant"
+                line = f"[{hhmm}] {content}"
+            else:
+                api_role = "user"
+                line = f"[{hhmm} {row['username']}] {content}"
+            if messages and messages[-1]["role"] == api_role:
+                messages[-1]["content"] += "\n" + line
+            else:
+                messages.append({"role": api_role, "content": line})
+        return messages
+
     def render_entries(self, entries: list[dict[str, str]]) -> str:
         lines: list[str] = []
         for row in entries:
@@ -159,6 +185,40 @@ class ChatHistoryStore:
         lines[idx] = json.dumps(row, ensure_ascii=False)
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return True
+
+    def pop_trailing_entries_by_role(
+        self,
+        *,
+        channel_id: int,
+        role: str,
+    ) -> list[dict[str, str]]:
+        """Pop the contiguous trailing entries with the given role."""
+        path = self._history_path(channel_id)
+        if not path.exists():
+            return []
+
+        lines = path.read_text(encoding="utf-8").splitlines()
+        removed: list[dict[str, str]] = []
+
+        while lines:
+            raw = lines[-1].strip()
+            if not raw:
+                lines.pop()
+                continue
+            try:
+                row = json.loads(raw)
+            except Exception:
+                break
+            if not isinstance(row, dict) or row.get("role") != role:
+                break
+            entry = self._parse_entry(row)
+            if entry:
+                removed.append(entry)
+            lines.pop()
+
+        if removed:
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return removed
 
     def delete_channel(self, channel_id: int) -> bool:
         """Delete history file for a channel. Returns True if a file was removed."""

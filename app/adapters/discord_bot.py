@@ -217,22 +217,25 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
         channel_id: int,
         pending_messages: list[dict[str, str]],
     ) -> str:
-        live_block = self.context_builder.build_live_block(channel_id=channel_id)
-        estimated_tokens = self.context_builder.estimate_tokens(live_block)
+        messages, summary = self.context_builder.build_messages_for_api(
+            channel_id=channel_id,
+            pending_messages=pending_messages,
+        )
+        input_tokens = self.reply_service.count_input_tokens(messages, summary=summary)
         if self.settings.app_mode == "debug":
             self.logger.info(
-                f"🧮 transcript_tokens ch={channel_id} est_tokens={estimated_tokens} "
+                f"🧮 transcript_tokens ch={channel_id} input_tokens={input_tokens} "
                 f"limit={self.settings.transcript_max_tokens}"
             )
         transcript = self.context_builder.build_context_for_api(
             channel_id=channel_id,
             pending_messages=pending_messages,
         )
-        if estimated_tokens <= self.settings.transcript_max_tokens:
+        if input_tokens <= self.settings.transcript_max_tokens:
             return transcript
 
         self.logger.info(
-            f"🗜️ transcript_over_limit ch={channel_id} est_tokens={estimated_tokens} "
+            f"🗜️ transcript_over_limit ch={channel_id} input_tokens={input_tokens} "
             f"limit={self.settings.transcript_max_tokens} -> compress"
         )
         try:
@@ -259,16 +262,19 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
 
         Handles auto-compression when token limit is exceeded.
         """
-        live_block = self.context_builder.build_live_block(channel_id=channel_id)
-        estimated_tokens = self.context_builder.estimate_tokens(live_block)
+        messages, summary = self.context_builder.build_messages_for_api(
+            channel_id=channel_id,
+            pending_messages=pending_messages,
+        )
+        input_tokens = self.reply_service.count_input_tokens(messages, summary=summary)
         if self.settings.app_mode == "debug":
             self.logger.info(
-                f"🧮 transcript_tokens ch={channel_id} est_tokens={estimated_tokens} "
+                f"🧮 transcript_tokens ch={channel_id} input_tokens={input_tokens} "
                 f"limit={self.settings.transcript_max_tokens}"
             )
-        if estimated_tokens > self.settings.transcript_max_tokens:
+        if input_tokens > self.settings.transcript_max_tokens:
             self.logger.info(
-                f"🗜️ transcript_over_limit ch={channel_id} est_tokens={estimated_tokens} "
+                f"🗜️ transcript_over_limit ch={channel_id} input_tokens={input_tokens} "
                 f"limit={self.settings.transcript_max_tokens} -> compress"
             )
             try:
@@ -505,7 +511,7 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
         self.history_store.replace_last_by_role(
             channel_id=channel_id, role="user", new_content=new_text,
         )
-        self._delete_bot_reply_db(channel_id)
+        self._delete_latest_bot_turn_db(channel_id)
         await self._regenerate_reply(channel_id, after.channel)
 
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
@@ -530,7 +536,7 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
             if batch is None:
                 return
             await self._delete_messages(batch)
-            self._delete_bot_reply_db(channel_id)
+            self._delete_latest_bot_turn_db(channel_id)
             await self._regenerate_reply(channel_id, channel)  # type: ignore[arg-type]
             return
 
@@ -557,8 +563,12 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
             if allowed_ids and str(message.author.id) not in allowed_ids:
                 return
 
-        image_descs = await self._describe_attachments(message)
-        text = await self._build_message_text(message, image_descs=image_descs)
+        now_clock = self._now_clock()
+        image_descs, history_saved = await self._describe_attachments(message)
+        text = await self._build_message_text(
+            message,
+            image_descs=[] if history_saved else image_descs,
+        )
         if not text:
             return
         key = self._typing_key(message.channel.id, message.author.id)
@@ -585,9 +595,13 @@ class DiscordBot(DispatchMixin, ProactiveMixin):
                 user_id=message.author.id,
                 user_label=self._user_label(message.author),
                 text=text,
+                now_clock=now_clock,
+                history_saved=history_saved,
             )
         else:
-            asyncio.create_task(self._reply_immediate(message, text))
+            asyncio.create_task(
+                self._reply_immediate(message, text, history_saved=history_saved)
+            )
 
     # -- lifecycle ------------------------------------------------------------
 

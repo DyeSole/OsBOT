@@ -13,8 +13,10 @@ from discord import AllowedMentions
 if TYPE_CHECKING:
     from app.infra.llm_client import LLMResponse
 
-_TAG_RE = re.compile(r"\[(?:TIMER|REACTION|IMAGE|VOICE|SEARCH):\s*[^\]]+\]")
-_SWITCH_MODE_RE = re.compile(r"\[SWITCH_MODE:\s*(chat|novel)\]")
+_TAG_RE = re.compile(
+    r"\[(?:TIMER|ALARM|REACTION|IMAGE|VOICE|SEARCH|计时器|闹钟|表情反应|画图|语音|搜索):\s*[^\]]+\]"
+)
+_SWITCH_MODE_RE = re.compile(r"\[(?:SWITCH_MODE|切换模式):\s*(chat|novel|聊天|小说)\]")
 _TIME_TAG_RE = re.compile(r"\[(?:[01]?\d|2[0-3]):[0-5]\d\]\s*")
 
 
@@ -48,7 +50,7 @@ class DispatchMixin:
             for tc in tool_calls
             if getattr(tc, "name", "")
         }
-        silent_tools = {"add_reaction", "generate_image", "send_voice"}
+        silent_tools = {"add_reaction"}
         blocking_tools = {"set_timer", "web_search"}
         return bool(tool_names & silent_tools) and not bool(tool_names & blocking_tools)
 
@@ -81,7 +83,7 @@ class DispatchMixin:
         """Filter [TAG: ...] markers from streaming text.
 
         Returns (safe_text_to_send, remaining_hold_buffer, detected_mode).
-        detected_mode is "chat"/"novel" if a SWITCH_MODE tag was found, else None.
+        detected_mode is "chat"/"novel" if a mode-switch tag was found, else None.
         """
         combined = tag_hold + raw
         safe = []
@@ -96,7 +98,8 @@ class DispatchMixin:
                     # check SWITCH_MODE first (swallow + detect mode)
                     m = _SWITCH_MODE_RE.fullmatch(hold)
                     if m:
-                        detected_mode = m.group(1)
+                        raw_mode = m.group(1)
+                        detected_mode = "chat" if raw_mode in ("chat", "聊天") else "novel"
                         hold = ""  # swallow the tag
                     elif _TIME_TAG_RE.fullmatch(hold):
                         hold = ""  # swallow llm-added [HH:MM] markers
@@ -265,7 +268,7 @@ class DispatchMixin:
                 reply = ""
             has_search = any(tc.name == "web_search" for tc in response.tool_calls)
             if reply and not has_search:
-                self._save_bot_reply(channel_id, reply)
+                self._save_bot_reply(channel_id, response.raw_text or reply)
             edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
             await self._handle_tool_calls(
                 response,
@@ -313,7 +316,10 @@ class DispatchMixin:
         if not merged_text:
             return
 
-        self._save_entry(channel_id, "user", pending.user_label, merged_text, at=pending.first_time)
+        unsaved_chunks = pending.chunks[pending.persisted_chunks:]
+        unsaved_text = "\n".join([chunk for chunk in unsaved_chunks if chunk]).strip()
+        if unsaved_text:
+            self._save_entry(channel_id, "user", pending.user_label, unsaved_text, at=pending.first_time)
         messages, summary = await self._build_messages_for_api(
             channel_id=channel_id,
             pending_messages=[],
@@ -333,12 +339,13 @@ class DispatchMixin:
 
         await self._send_and_finalize(channel_id, pending.channel, messages, pending.anchor_message, summary=summary)
 
-    async def _reply_immediate(self, message: discord.Message, text: str) -> None:
+    async def _reply_immediate(self, message: discord.Message, text: str, *, history_saved: bool = False) -> None:
         channel_id = message.channel.id
         user_label = self._user_label(message.author)
         now_clock = self._now_clock()
 
-        self._save_entry(channel_id, "user", user_label, text, at=now_clock)
+        if not history_saved:
+            self._save_entry(channel_id, "user", user_label, text, at=now_clock)
         messages, summary = await self._build_messages_for_api(
             channel_id=channel_id,
             pending_messages=[],
@@ -363,13 +370,14 @@ class DispatchMixin:
         for tc in tool_calls:
             if tc.name == "set_timer":
                 seconds = tc.input.get("seconds", 0)
+                if isinstance(seconds, (int, float)) and seconds > 0:
+                    self._schedule_variable_timer(channel_id, channel, seconds, source="llm")
+            elif tc.name == "set_alarm":
+                seconds = tc.input.get("seconds", 0)
                 reason = tc.input.get("reason") or None
                 if isinstance(seconds, (int, float)) and seconds > 0:
-                    if reason:
-                        self._schedule_alarm(channel_id, channel, seconds, reason)
-                        alarms_set.append((seconds, reason))
-                    else:
-                        self._schedule_variable_timer(channel_id, channel, seconds, source="llm")
+                    self._schedule_alarm(channel_id, channel, seconds, reason)
+                    alarms_set.append((seconds, reason))
         return alarms_set
 
     async def _handle_tool_calls(
@@ -532,7 +540,7 @@ class DispatchMixin:
         file = discord.File(io.BytesIO(audio_bytes), filename="voice.mp3")
         try:
             await channel.send(file=file)
-            self._save_bot_reply(channel_id, f"[语音: {text}]")
+            self._save_bot_reply(channel_id, f"[VOICE: {text}]")
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "failed to send voice message", exc=exc)
         await self._remove_reaction(source_message, "🎤")
@@ -585,7 +593,7 @@ class DispatchMixin:
             import io
             file = discord.File(io.BytesIO(image_bytes), filename="image.png")
             await channel.send(file=file)
-            self._save_bot_reply(channel_id, f"[图片: {prompt}]")
+            self._save_bot_reply(channel_id, f"[IMAGE: {prompt}]")
         except Exception as exc:  # noqa: BLE001
             self.logger.error("UNKNOWN", "failed to send generated image", exc=exc)
 
@@ -610,7 +618,7 @@ class DispatchMixin:
         self.logger.info(f"🔍 web_search query={query} depth={search_depth}")
         recent_entries = self.history_store.load_all_entries(channel_id=channel_id)
         context_hint = self.history_store.render_entries(recent_entries[-10:]) if recent_entries else ""
-        soul = load_system_prompt(effective_mode=self.effective_split_mode)
+        soul = load_system_prompt()
         try:
             results = await asyncio.to_thread(
                 web_search,
@@ -632,7 +640,7 @@ class DispatchMixin:
                 source = urlparse(r['href']).netloc.removeprefix("www.") if r['href'] else "unknown"
                 lines.append(f"- [{source}] {r['title']}\n  {r['body']}\n  {r['href']}")
             search_block = "\n".join(lines)
-            search_block += "\n\n请根据以上搜索结果回答用户，引用相关来源。如果多个来源有不同说法，请分别说明。"
+            search_block += "\n\n这是你搜索的东西，请查收。"
         else:
             search_block = f"[搜索结果: {query}]\n未找到相关结果。"
 
@@ -706,7 +714,7 @@ class DispatchMixin:
                         await self._reply_by_sentence(None, reply, channel=channel)
                 else:
                     await self._reply_by_sentence(None, reply, channel=channel)
-                self._save_bot_reply(channel_id, reply)
+                self._save_bot_reply(channel_id, search_response.raw_text or reply)
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("UNKNOWN", "failed to send search reply", exc=exc)
 
@@ -757,8 +765,11 @@ class DispatchMixin:
             except Exception:  # noqa: BLE001
                 pass
 
-    def _delete_bot_reply_db(self, channel_id: int) -> None:
-        self.history_store.pop_last_by_role(channel_id=channel_id, role="assistant")
+    def _delete_latest_bot_turn_db(self, channel_id: int) -> None:
+        self.history_store.pop_trailing_entries_by_role(
+            channel_id=channel_id,
+            role="assistant",
+        )
 
     async def _regenerate_reply(
         self,
@@ -784,7 +795,7 @@ class DispatchMixin:
                 reply = ""
             has_search = any(tc.name == "web_search" for tc in response.tool_calls)
             if reply and not has_search:
-                self._save_bot_reply(channel_id, reply)
+                self._save_bot_reply(channel_id, response.raw_text or reply)
             edit_msg = sent_msgs[-1] if sent_msgs and has_search else None
             await self._handle_tool_calls(
                 response,
@@ -800,47 +811,65 @@ class DispatchMixin:
 
     # -- image processing -----------------------------------------------------
 
-    async def _describe_attachments(self, message: discord.Message) -> list[str]:
+    async def _describe_attachments(self, message: discord.Message) -> tuple[list[str], bool]:
         vision = self.reply_service.vision_client
         if not vision.available:
-            return []
+            return [], False
 
         IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
-        has_images = any(
-            (att.content_type or "").split(";")[0].strip().lower() in IMAGE_TYPES
-            for att in message.attachments
-        )
-        if not has_images:
-            return []
+        image_atts = [
+            att for att in message.attachments
+            if (att.content_type or "").split(";")[0].strip().lower() in IMAGE_TYPES
+        ]
+        if not image_atts:
+            return [], False
 
+        soul = self.prompt_service.read_prompt("soul").strip()
         vision_prompt = self.prompt_service.read_prompt("vision").strip()
+        system_prompt = f"{soul}\n\n{vision_prompt}".strip() if soul else vision_prompt
         channel_id = message.channel.id
-        recent = self.history_store.load_all_entries(channel_id=channel_id)[-self.settings.context_entries:]
+        all_entries = self.history_store.load_all_entries(channel_id=channel_id)
+        recent = all_entries[-self.settings.context_entries:]
         context = self.history_store.render_entries(recent) if recent else ""
+        full_context = self.history_store.render_entries(all_entries) if all_entries else ""
+        user_label = self._user_label(message.author)
+        base_text = (message.content or "").strip()
+        placeholder_lines = [base_text] if base_text else []
+        placeholder_lines.append("[系统提示] 这条消息附带了图片，正在识图中。")
+        self._save_entry(
+            channel_id,
+            "user",
+            user_label,
+            "\n".join(placeholder_lines),
+            at=self._now_clock(),
+        )
         await self._add_reaction(message, "👁️")
-        status_msg = await message.channel.send("正在识图...")
-        descriptions: list[str] = []
 
-        for att in message.attachments:
-            ct = att.content_type or ""
-            media_type = ct.split(";")[0].strip().lower()
-            if media_type not in IMAGE_TYPES:
-                continue
+        descriptions: list[str] = []
+        for att in image_atts:
+            media_type = (att.content_type or "").split(";")[0].strip().lower()
             try:
                 image_bytes = await att.read()
                 desc = await asyncio.to_thread(
-                    vision.describe_image, image_bytes, media_type, system_prompt=vision_prompt, context=context,
+                    vision.describe_image, image_bytes, media_type, system_prompt=system_prompt, context=context, image_url=att.url, fallback_context=full_context,
                 )
+                self.logger.info(f"👁️ vision_result att={att.filename} desc={desc!r}")
                 if desc:
-                    descriptions.append(f"[图片: {desc}]")
+                    descriptions.append(f"[识图成功: {desc}]")
+                else:
+                    descriptions.append(f"[图片: {att.filename} 识别失败]")
             except Exception as exc:  # noqa: BLE001
-                self.logger.error("VISION", f"failed to describe attachment {att.filename}", exc=exc)
+                self.logger.info(f"👁️ vision_error att={att.filename} exc={exc}")
                 descriptions.append(f"[图片: {att.filename} 识别失败]")
 
-        try:
-            await status_msg.delete()
-        except Exception:  # noqa: BLE001
-            pass
         await self._remove_reaction(message, "👁️")
-
-        return descriptions
+        summary_lines = ["[系统提示] 上一条附图消息的识图结果如下："]
+        summary_lines.extend(descriptions or ["[图片识别失败]"])
+        self._save_entry(
+            channel_id,
+            "user",
+            "系统",
+            "\n".join(summary_lines),
+            at=self._now_clock(),
+        )
+        return descriptions, True

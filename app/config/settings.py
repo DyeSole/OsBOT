@@ -16,54 +16,46 @@ CONFIG_PATH = BASE_DIR / "data" / "config.json"
 class Settings:
     bot_key: str
     discord_bot_token: str
-    app_mode: str = "normal"
-    base_url: str = "https://vesper.omenaros.site/v1"
-    api_key: str = ""
-    model: str = "claude-opus-4-6-thinking"
-    show_error_detail: bool = False
-    show_api_payload: bool = False
-    show_interaction_logs: bool = True
-    session_timeout_seconds: float = 15.0
-    typing_detect_delay_seconds: float = 1.0
-    reset_timer_seconds: float = 3.0
-    proactive_idle_seconds: float = 180.0
-    typing_wait: bool = False
-    split_mode: str = "auto"
-    chat_reply_delay_seconds: float = 0.8
-    typing_nudge_seconds: float = 60.0
-    watch_online_idle_seconds: float = 30.0
-    quiet_enabled: bool = False
-    quiet_start: str = ""
-    quiet_end: str = ""
-    watch_user_ids: list[str] = None
-    jealousy_channel_ids: list[str] = None
-    context_entries: int = 15
-    transcript_max_tokens: int = 20000
-    search_base_url: str = "https://vesper.omenaros.site/v1"
-    search_api_key: str = ""
-    search_model: str = "grok-4.1-fast"
-    vision_base_url: str = "https://gcli.ggchan.dev/v1"
-    vision_api_key: str = ""
-    vision_model: str = "gemini-2.5-pro"
-    hf_image_api_key: str = ""
-    hf_image_model: str = ""
-    compression_base_url: str = ""
-    compression_api_key: str = ""
-    compression_model: str = "claude-haiku-4-5"
-    tts_api_key: str = ""
-    tts_voice_id: str = ""
-    tts_speed: float = 0.94
-    tts_pitch: int = 0
-    tts_emotion: str = ""
-    pixai_tokens: list[str] = None
-
-    def __post_init__(self) -> None:
-        if self.watch_user_ids is None:
-            self.watch_user_ids = []
-        if self.jealousy_channel_ids is None:
-            self.jealousy_channel_ids = []
-        if self.pixai_tokens is None:
-            self.pixai_tokens = []
+    app_mode: str
+    base_url: str
+    api_key: str
+    model: str
+    show_error_detail: bool
+    show_api_payload: bool
+    show_interaction_logs: bool
+    session_timeout_seconds: float
+    typing_detect_delay_seconds: float
+    reset_timer_seconds: float
+    proactive_idle_seconds: float
+    typing_wait: bool
+    split_mode: str
+    chat_reply_delay_seconds: float
+    typing_nudge_seconds: float
+    watch_online_idle_seconds: float
+    quiet_enabled: bool
+    quiet_start: str
+    quiet_end: str
+    watch_user_ids: list[str]
+    jealousy_channel_ids: list[str]
+    context_entries: int
+    transcript_max_tokens: int
+    search_base_url: str
+    search_api_key: str
+    search_model: str
+    vision_base_url: str
+    vision_api_key: str
+    vision_model: str
+    hf_image_api_key: str
+    hf_image_model: str
+    compression_base_url: str
+    compression_api_key: str
+    compression_model: str
+    tts_api_key: str
+    tts_voice_id: str
+    tts_speed: float
+    tts_pitch: int
+    tts_emotion: str
+    pixai_tokens: list[str]
 
 
 # -- file I/O ----------------------------------------------------------------
@@ -150,7 +142,7 @@ def load_settings() -> Settings:
     if split_mode not in ("chat", "novel", "auto"):
         split_mode = "auto"
     typing_nudge_seconds = float(_env_value("TYPING_NUDGE_SECONDS", merged, "60.0").strip() or "60.0")
-    watch_online_idle_seconds = float(_env_value("WATCH_ONLINE_IDLE_SECONDS", merged, "30.0").strip() or "30.0")
+    watch_online_idle_seconds = float(_env_value("WATCH_ONLINE_IDLE_SECONDS", merged, "55.0").strip() or "55.0")
     quiet_enabled = _env_bool("QUIET_ENABLED", merged, False)
     quiet_start = _env_value("QUIET_START", merged, "").strip()
     quiet_end = _env_value("QUIET_END", merged, "").strip()
@@ -166,9 +158,9 @@ def load_settings() -> Settings:
     search_api_key = _env_value("SEARCH_API_KEY", merged, "").strip()
     search_model = _env_value("SEARCH_MODEL", merged, "grok-4.1-fast").strip()
 
-    vision_base_url = _env_value("VISION_BASE_URL", merged, "https://gcli.ggchan.dev/v1").strip()
+    vision_base_url = _env_value("VISION_BASE_URL", merged, "").strip()
     vision_api_key = _env_value("VISION_API_KEY", merged, "").strip()
-    vision_model = _env_value("VISION_MODEL", merged, "gemini-2.5-pro").strip()
+    vision_model = _env_value("VISION_MODEL", merged, "grok-4.20-beta").strip()
     hf_image_api_key = _env_value("HF_IMAGE_API_KEY", merged, "").strip()
     hf_image_model = _env_value("HF_IMAGE_MODEL", merged, "").strip()
 

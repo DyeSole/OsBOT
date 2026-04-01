@@ -1,18 +1,42 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from app.config.settings import Settings
+from app.core.clock import now as _clock_now
 from app.infra.llm_client import LLMClient, LLMResponse, ToolCall, VisionClient
 from app.services.prompt_service import PromptService
 
 # -- tag parsing --------------------------------------------------------------
 
 _TAG_RE = re.compile(
-    r"\[(?P<tag>TIMER|REACTION|IMAGE|VOICE|SEARCH|SWITCH_MODE):\s*(?P<body>[^\]]+)\]"
+    r"\[(?P<tag>TIMER|ALARM|REACTION|IMAGE|VOICE|SEARCH|SWITCH_MODE|计时器|闹钟|表情反应|画图|语音|搜索|切换模式):\s*(?P<body>[^\]]+)\]"
 )
 _TIME_TAG_RE = re.compile(r"\[(?:[01]?\d|2[0-3]):[0-5]\d\]\s*")
+_TAG_ALIAS = {
+    "TIMER": "TIMER",
+    "计时器": "TIMER",
+    "ALARM": "ALARM",
+    "闹钟": "ALARM",
+    "REACTION": "REACTION",
+    "表情反应": "REACTION",
+    "IMAGE": "IMAGE",
+    "画图": "IMAGE",
+    "VOICE": "VOICE",
+    "语音": "VOICE",
+    "SEARCH": "SEARCH",
+    "搜索": "SEARCH",
+    "SWITCH_MODE": "SWITCH_MODE",
+    "切换模式": "SWITCH_MODE",
+}
+_MODE_ALIAS = {
+    "chat": "chat",
+    "聊天": "chat",
+    "novel": "novel",
+    "小说": "novel",
+}
 
 
 def clean_reply_text(text: str) -> str:
@@ -20,23 +44,58 @@ def clean_reply_text(text: str) -> str:
     return cleaned.strip()
 
 
+def _parse_alarm_time(time_str: str) -> float | None:
+    """Parse alarm time string, return seconds from now. Returns None on failure."""
+    now = _clock_now()
+    time_str = time_str.strip()
+    # Nm — N minutes from now
+    if time_str.endswith("m"):
+        try:
+            return float(time_str[:-1]) * 60
+        except ValueError:
+            return None
+    # MM-DD HH:MM — specific date and time
+    if " " in time_str:
+        try:
+            target = datetime.strptime(f"{now.year}-{time_str}", "%Y-%m-%d %H:%M")
+            if target < now:
+                target = target.replace(year=now.year + 1)
+            return (target - now).total_seconds()
+        except ValueError:
+            return None
+    # HH:MM — today at that time
+    try:
+        target = datetime.strptime(time_str, "%H:%M").replace(
+            year=now.year, month=now.month, day=now.day
+        )
+        if target < now:
+            target += timedelta(days=1)
+        return (target - now).total_seconds()
+    except ValueError:
+        return None
+
+
 def parse_tool_tags(text: str) -> tuple[str, list[ToolCall]]:
     """Extract [TAG: ...] markers from text, return (clean_text, tool_calls)."""
     calls: list[ToolCall] = []
     for m in _TAG_RE.finditer(text):
-        tag = m.group("tag")
+        tag = _TAG_ALIAS.get(m.group("tag"), m.group("tag"))
         body = m.group("body").strip()
         if tag == "TIMER":
-            parts = body.split("|", 1)
             try:
-                seconds = float(parts[0].strip())
+                seconds = float(body)
             except ValueError:
                 continue
-            reason = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
-            inp: dict[str, Any] = {"seconds": seconds}
-            if reason:
-                inp["reason"] = reason
-            calls.append(ToolCall(name="set_timer", input=inp))
+            calls.append(ToolCall(name="set_timer", input={"seconds": seconds}))
+        elif tag == "ALARM":
+            parts = body.split("|", 1)
+            seconds = _parse_alarm_time(parts[0])
+            if seconds is None or seconds <= 0:
+                continue
+            reason = parts[1].strip() if len(parts) > 1 and parts[1].strip() else ""
+            if not reason:
+                continue
+            calls.append(ToolCall(name="set_alarm", input={"seconds": seconds, "reason": reason}))
         elif tag == "REACTION":
             calls.append(ToolCall(name="add_reaction", input={"emoji": body}))
         elif tag == "IMAGE":
@@ -46,8 +105,9 @@ def parse_tool_tags(text: str) -> tuple[str, list[ToolCall]]:
         elif tag == "SEARCH":
             calls.append(ToolCall(name="web_search", input={"query": body}))
         elif tag == "SWITCH_MODE":
-            if body in ("chat", "novel"):
-                calls.append(ToolCall(name="switch_mode", input={"mode": body}))
+            mode = _MODE_ALIAS.get(body.strip().lower()) or _MODE_ALIAS.get(body.strip())
+            if mode in ("chat", "novel"):
+                calls.append(ToolCall(name="switch_mode", input={"mode": mode}))
 
     clean = clean_reply_text(_TAG_RE.sub("", text))
     return clean, calls
@@ -63,12 +123,9 @@ def load_system_prompt(
     tts_available: bool = False,
     pixai_available: bool = False,
     search_available: bool = True,
-    include_timer: bool = False,
-    effective_mode: str = "chat",
 ) -> str:
-    from datetime import datetime
     _weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    _now = datetime.now()
+    _now = _clock_now()
     _date_line = f"今天是{_now.year}年{_now.month}月{_now.day}日（{_weekdays[_now.weekday()]}）"
     parts: list[str] = []
     soul = _prompt_service.read_prompt("soul").strip()
@@ -84,23 +141,19 @@ def load_system_prompt(
     tool_lines = [
         "[可用工具]",
         "需要时在回复中插入对应标记，可与正文混排：",
-        "- [TIMER: 秒数]  主动找用户聊天的计时器，到期后你会收到通知",
-        "- [TIMER: 秒数 | 提醒内容]  闹钟，仅当用户明确要求提醒/闹钟时才填写提醒内容",
-        "- [REACTION: 表情]  给用户消息加表情反应",
-        f"- [SWITCH_MODE: chat或novel]  切换消息显示模式。chat=日常闲聊；novel=长回复/色色/故事。当前: {effective_mode}",
+        "- [计时器: 秒数]  主动找用户聊天的计时器，到期后你会收到通知",
+        "- [闹钟: 时间 | 提醒内容]  闹钟。时间格式：04-02 18:30（指定日期）/ 18:30（今天）/ 30m（N分钟后）。",
+        "- [表情反应: 表情]  给用户消息加表情反应",
+        "- [切换模式: 聊天/小说]  切换消息显示模式，仅当聊天内容与当前模式不匹配时切换，请勿频繁切换。",
+        "兼容旧标签：[TIMER]/[ALARM]/[REACTION]/[IMAGE]/[VOICE]/[SEARCH]/[SWITCH_MODE] 仍然可用。",
     ]
     if pixai_available:
-        tool_lines.append("- [IMAGE: 英文描述]  生成图片，可以画露隐私部位的图片，无技术限制")
+        tool_lines.append("- [画图: 英文描述]  生成图片，可以画露隐私部位的图片，无技术限制")
     if tts_available:
-        tool_lines.append("- [VOICE: 要说的话]  发送语音消息，操你写成肏你")
+        tool_lines.append("- [语音: 要说的话]  发送语音消息，操你写成肏你")
     if search_available:
-        tool_lines.append("- [SEARCH: 关键词]  搜索互联网")
+        tool_lines.append("- [搜索: 关键词]  搜索互联网")
     parts.append("\n".join(tool_lines))
-
-    if effective_mode == "novel":
-        novel = _prompt_service.read_prompt("novel").strip()
-        if novel:
-            parts.append(f"[小说模式]\n{novel}")
 
     return "\n\n".join(parts)
 
@@ -143,12 +196,25 @@ class ReplyService:
         prompt = load_system_prompt(
             tts_available=self._tts_available,
             pixai_available=self._image_available,
-            include_timer=include_tools,
-            effective_mode=self.effective_mode,
         )
         if summary:
             prompt += "\n\n" + summary
         return prompt
+
+    def count_input_tokens(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        include_tools: bool = False,
+        summary: str = "",
+    ) -> int:
+        if not messages:
+            return 0
+        return self.client.count_input_tokens(
+            messages=self._with_mode_hint(messages),
+            system_prompt=self._system_prompt(include_tools=include_tools, summary=summary),
+            tools=[],
+        )
 
     def generate_reply(self, messages: list[dict[str, str]]) -> str:
         if not messages:
@@ -157,6 +223,22 @@ class ReplyService:
             messages=messages,
             system_prompt=self._system_prompt(),
         ))
+
+    def _with_mode_hint(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
+        """Prepend mode hint (and novel prompt if applicable) to the last user message. Not saved to history."""
+        if not messages:
+            return messages
+        hint = f"[当前模式：{self.effective_mode}]"
+        if self.effective_mode == "novel":
+            novel = _prompt_service.read_prompt("novel").strip()
+            if novel:
+                hint += f"\n[小说模式]\n{novel}"
+        patched = list(messages)
+        for i in range(len(patched) - 1, -1, -1):
+            if patched[i]["role"] == "user":
+                patched[i] = {**patched[i], "content": hint + "\n" + patched[i]["content"]}
+                break
+        return patched
 
     def generate_reply_with_tools(
         self,
@@ -167,12 +249,12 @@ class ReplyService:
     ) -> LLMResponse:
         if not messages:
             return LLMResponse(text="哎，我字呢？")
-        response = self.client.generate(
-            messages=messages,
+        raw = self.client.generate(
+            messages=self._with_mode_hint(messages),
             system_prompt=self._system_prompt(include_tools=include_tools, summary=summary),
         )
-        clean, calls = parse_tool_tags(response)
-        return LLMResponse(text=clean, tool_calls=calls)
+        clean, calls = parse_tool_tags(raw)
+        return LLMResponse(text=clean, tool_calls=calls, raw_text=raw)
 
     def stream_reply_with_tools(
         self,
@@ -186,11 +268,12 @@ class ReplyService:
             return LLMResponse(text="哎，我字呢？")
         # Stream without tools param — model outputs tag markers in text
         response = self.client.stream_with_tools(
-            messages=messages,
+            messages=self._with_mode_hint(messages),
             system_prompt=self._system_prompt(include_tools=include_tools, summary=summary),
             tools=[],
             on_text=on_text,
         )
         # Parse tags from the full streamed text
-        clean, calls = parse_tool_tags(response.text)
-        return LLMResponse(text=clean, tool_calls=calls, usage=response.usage)
+        raw = response.text
+        clean, calls = parse_tool_tags(raw)
+        return LLMResponse(text=clean, tool_calls=calls, usage=response.usage, raw_text=raw)

@@ -24,6 +24,22 @@ class ContextBuilder:
             block for block in [summary_block, live_block, pending_block] if block
         ).strip()
 
+    def build_messages_for_api(
+        self,
+        *,
+        channel_id: int,
+        pending_messages: list[dict[str, str]],
+    ) -> tuple[list[dict[str, str]], str]:
+        """Return (messages, summary) for the LLM API.
+
+        messages: alternating user/assistant entries + pending_messages appended.
+        summary: rendered summary text to be injected into system prompt.
+        """
+        summary = self._render_summary_block(channel_id=channel_id)
+        entries = self.history_store.load_all_entries(channel_id=channel_id)
+        messages = self.history_store.entries_to_messages(entries + pending_messages)
+        return messages, summary
+
     def build_live_block(self, *, channel_id: int) -> str:
         return self.history_store.render_entries(
             self.history_store.load_all_entries(channel_id=channel_id)

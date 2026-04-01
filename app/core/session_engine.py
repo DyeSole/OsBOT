@@ -16,6 +16,8 @@ class PendingReplySession:
     last_message_at: float
     use_long_timer: bool
     chunks: list[str]
+    history_saved: bool
+    persisted_chunks: int
     task: asyncio.Task | None = None
 
 
@@ -55,6 +57,7 @@ class SessionEngine:
         text: str,
         now: float,
         now_clock: str,
+        history_saved: bool = False,
     ) -> tuple[PendingReplySession, bool]:
         key = self.key(channel_id, user_id)
         session = self._sessions.get(key)
@@ -69,6 +72,8 @@ class SessionEngine:
                 last_message_at=now,
                 use_long_timer=False,
                 chunks=[text],
+                history_saved=history_saved,
+                persisted_chunks=1 if history_saved else 0,
             )
             self._sessions[key] = session
             return session, True
@@ -78,6 +83,9 @@ class SessionEngine:
         session.chunks.append(text)
         session.last_activity_at = now
         session.last_message_at = now
+        session.history_saved = session.history_saved or history_saved
+        if history_saved and session.persisted_chunks == 0:
+            session.persisted_chunks = len(session.chunks)
         return session, False
 
     @staticmethod
